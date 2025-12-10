@@ -27,7 +27,7 @@ func (a *acceptor) Send(pb protomessage.ProtoMessage) error {
 	if err != nil {
 		return fmt.Errorf("[acceptor/Send] proto Marshal %w", err)
 	}
-	bdata, err := a.codec.Pack(packet.New(packet.Data, pb.MessageID(), pdata))
+	bdata, err := a.codec.Pack(packet.Data, pb.MessageID(), a.ID(), pdata)
 	if err != nil {
 		return fmt.Errorf("[acceptor/Send] codec Pack %w", err)
 	}

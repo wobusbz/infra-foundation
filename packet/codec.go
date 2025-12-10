@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	HeadLength    = 8
+	HeadLength    = 9
 	MaxPacketSize = 10 << 20
 )
 
@@ -29,7 +29,35 @@ func NewPackCodec() *PackCodec {
 	return &PackCodec{buf: bytes.NewBuffer(nil), size: -1}
 }
 
-func (p *PackCodec) Pack(pack *Packet) ([]byte, error) {
+func (p *PackCodec) Pack(typ Type, id int32, sid int64, payload []byte) ([]byte, error) {
+	if typ < Heartbeat || typ >= Invalid {
+		return nil, ErrWrongPacketType
+	}
+	payloadLen := uint32(len(payload))
+	total := HeadLength
+	if p.isSidOffset(typ) {
+		total += 8
+	}
+
+	total += int(payloadLen)
+
+	buf := make([]byte, total)
+
+	buf[0] = byte(typ)
+	binary.BigEndian.PutUint32(buf[1:5], uint32(payloadLen))
+	binary.BigEndian.PutUint32(buf[5:9], uint32(id))
+	offset := HeadLength
+
+	if p.isSidOffset(typ) {
+		binary.BigEndian.PutUint64(buf[offset:offset+8], uint64(sid))
+		offset += 8
+	}
+
+	copy(buf[offset:], payload)
+	return buf, nil
+}
+
+func (p *PackCodec) Pack1(pack *Packet) ([]byte, error) {
 	if pack.typ < Heartbeat || (pack.typ >= Invalid) {
 		return nil, ErrWrongPacketType
 	}
@@ -44,8 +72,8 @@ func (p *PackCodec) Pack(pack *Packet) ([]byte, error) {
 	buf := make([]byte, total)
 
 	buf[0] = byte(pack.typ)
-	copy(buf[1:4], intToBytes(int(payloadLen)))
-	binary.BigEndian.PutUint32(buf[4:8], uint32(pack.id))
+	binary.BigEndian.PutUint32(buf[1:5], uint32(payloadLen))
+	binary.BigEndian.PutUint32(buf[5:9], uint32(pack.id))
 
 	offset := HeadLength
 
@@ -85,12 +113,12 @@ func (p *PackCodec) Unpack(data []byte) ([]*Packet, error) {
 				return packets, ErrWrongPacketType
 			}
 
-			payloadLen := int32(bytesToInt(b[1:4]))
+			payloadLen := int32(binary.BigEndian.Uint32(b[1:5]))
 			if payloadLen < 0 || payloadLen > MaxPacketSize {
 				return packets, ErrPacketSizeExceed
 			}
 
-			id := int32(binary.BigEndian.Uint32(b[4:8]))
+			id := int32(binary.BigEndian.Uint32(b[5:9]))
 
 			offset := HeadLength
 			if p.isSidOffset(typ) {
@@ -143,16 +171,4 @@ func (p *PackCodec) Unpack(data []byte) ([]*Packet, error) {
 	}
 
 	return packets, nil
-}
-
-func bytesToInt(b []byte) int {
-	return int(b[2]) | int(b[1])<<8 | int(b[0])<<16
-}
-
-func intToBytes(n int) []byte {
-	var b [3]byte
-	b[0] = byte(n >> 16)
-	b[1] = byte(n >> 8)
-	b[2] = byte(n)
-	return b[:]
 }

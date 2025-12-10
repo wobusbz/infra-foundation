@@ -7,12 +7,12 @@ import (
 
 func TestPackCodec(t *testing.T) {
 	packCodec := NewPackCodec()
-	b, err := packCodec.Pack(New(Heartbeat, 100, []byte("helloworld")))
+	b, err := packCodec.Pack(Heartbeat, 100, 0, []byte("helloworld"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Log(len(b))
-	bdata, err := packCodec.Pack(NewInternal(Heartbeat, 0, math.MaxInt64, b))
+	bdata, err := packCodec.Pack(Heartbeat, 0, math.MaxInt64, b)
 	if err != nil {
 		t.Fatal(err)
 	}

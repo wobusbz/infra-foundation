@@ -117,9 +117,11 @@ func (c *Connection) SendData(data []byte) error {
 
 func (c *Connection) SendPack(pack *packet.Packet) error {
 	if c.IsClosed() {
+		pack.Free()
 		return errors.New("[Connection/SendPack] connection closed")
 	}
-	bdata, err := c.PackCodec.Pack(pack)
+	bdata, err := c.PackCodec.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
+	pack.Free()
 	if err != nil {
 		return fmt.Errorf("[Connection/Send] Pack %w", err)
 	}

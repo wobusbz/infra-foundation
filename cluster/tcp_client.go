@@ -111,9 +111,11 @@ func (t *TCPClient) SendData(data []byte) error {
 
 func (t *TCPClient) SendPack(pack *packet.Packet) error {
 	if t.IsClosed() {
+		pack.Free()
 		return errors.New("[TCPClient/SendPack] connection closed")
 	}
-	bdata, err := t.codec.Pack(pack)
+	bdata, err := t.codec.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
+	pack.Free()
 	if err != nil {
 		return fmt.Errorf("[TCPClient/Send] Pack %w", err)
 	}
