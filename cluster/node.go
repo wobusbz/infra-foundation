@@ -28,6 +28,8 @@ func (n *node) connection(id, name string) error {
 	if err := conn.DialConnection(n.Addr); err != nil {
 		return err
 	}
+	sid, _ := strconv.Atoi(n.Id)
+	conn.BindID(int64(sid))
 	return conn.SendTypePb(packet.Connection, &N2MOnConnection{ID: id, Name: name, Frontend: n.Frontend})
 }
 

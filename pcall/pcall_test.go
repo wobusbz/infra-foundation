@@ -38,3 +38,17 @@ func TestPcall_Fail(t *testing.T) {
 	// 	t.Fatalf("expected nil ret, got %v", ret)
 	// }
 }
+
+type Type byte
+
+const (
+	Heartbeat Type = 0x01 + iota
+	Handshake
+	HandshakeAck
+	Data
+	InternalData
+	ClientData
+	BindSession
+	DisSession
+	Invalid
+)

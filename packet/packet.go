@@ -1,7 +1,6 @@
 package packet
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -31,8 +30,7 @@ const (
 )
 
 var (
-	ErrWrongPacketType = errors.New("wrong packet type")
-	packetPool         = sync.Pool{New: func() any { return &Packet{} }}
+	packetPool = sync.Pool{New: func() any { return &Packet{} }}
 )
 
 type Packet struct {

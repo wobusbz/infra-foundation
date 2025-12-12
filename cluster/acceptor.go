@@ -7,6 +7,7 @@ import (
 	"infra-foundation/packet"
 	"infra-foundation/protomessage"
 	"infra-foundation/session"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -16,6 +17,7 @@ type acceptor struct {
 	codec        *packet.PackCodec
 	modelManager *model.ModelManager
 	connManager  *connmannger.ConnManager
+	closed       atomic.Bool
 }
 
 func newAcceptor(s *session.NetworkEntities, svr Server) *acceptor {
@@ -31,37 +33,46 @@ func (a *acceptor) Send(pb protomessage.ProtoMessage) error {
 	if err != nil {
 		return fmt.Errorf("[acceptor/Send] codec Pack %w", err)
 	}
-	return a.remoteCall(packet.NewInternal(packet.ClientData, 0, a.ID(), bdata), pb.NodeName())
+	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, 0, a.ID(), bdata), pb.NodeName())
 }
 
-func (a *acceptor) SendPb(typ packet.Type, id int32, pb protomessage.ProtoMessage) error { return nil }
+func (a *acceptor) SendPb(typ packet.Type, id int32, pb protomessage.ProtoMessage) error {
+	pdata, err := proto.Marshal(pb)
+	if err != nil {
+		return fmt.Errorf("[acceptor/SendPb] proto Marshal %w", err)
+	}
+	bdata, err := a.codec.Pack(typ, id, a.ID(), pdata)
+	if err != nil {
+		return fmt.Errorf("[acceptor/SendPb] codec Pack %w", err)
+	}
+	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, id, a.ID(), bdata), pb.NodeName())
+}
 
-func (a *acceptor) SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error { return nil }
+func (a *acceptor) SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error {
+	pdata, err := proto.Marshal(pb)
+	if err != nil {
+		return fmt.Errorf("[acceptor/SendTypePb] proto Marshal %w", err)
+	}
+	bdata, err := a.codec.Pack(typ, pb.MessageID(), a.ID(), pdata)
+	if err != nil {
+		return fmt.Errorf("[acceptor/SendTypePb] codec Pack %w", err)
+	}
+	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, pb.MessageID(), a.ID(), bdata), pb.NodeName())
+}
 
-func (a *acceptor) SendPack(pack *packet.Packet) error { return nil }
+func (a *acceptor) SendPack(pack *packet.Packet) error {
+	bdata, err := a.codec.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
+	if err != nil {
+		return fmt.Errorf("[acceptor/SendPack] codec Pack %w", err)
+	}
+	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, pack.ID(), a.ID(), bdata), "")
+}
 
 func (a *acceptor) Close() error {
-	a.connManager.RemoveByID(a.ID())
-	a.modelManager.OnDisconnection(a)
-	return nil
-}
-
-func (a *acceptor) remoteCall(pack *packet.Packet, nodeName string) error {
-	var (
-		agent session.Session
-		err   error
-	)
-	switch {
-	case defaultNodeAgent.hasGroutes(pack.ID()):
-		agent, err = defaultNodeAgent.getNodeByName(a, nodeName)
-		if err != nil {
-			return fmt.Errorf("[acceptor/Send] %w", err)
-		}
-	default:
-		agent, err = defaultNodeAgent.getGateNode(a)
-		if err != nil {
-			return fmt.Errorf("[acceptor/Send] %w", err)
-		}
+	if !a.closed.CompareAndSwap(false, true) {
+		return nil
 	}
-	return agent.SendPack(pack)
+	a.modelManager.OnDisconnection(a)
+	a.connManager.RemoveByID(a.ID())
+	return nil
 }

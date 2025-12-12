@@ -3,6 +3,7 @@ package session
 import (
 	"infra-foundation/networkentities"
 	protomessage "infra-foundation/protomessage"
+	"maps"
 	"sync"
 	"sync/atomic"
 )
@@ -80,5 +81,7 @@ func (n *NetworkEntities) BindServers(name, id string) {
 func (n *NetworkEntities) Servers() map[string]string {
 	n.serversrw.RLock()
 	defer n.serversrw.RUnlock()
-	return n.servers
+	servers := make(map[string]string, len(n.servers))
+	maps.Copy(servers, n.servers)
+	return servers
 }

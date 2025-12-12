@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type Model interface {
@@ -25,8 +27,13 @@ type Model interface {
 
 type handler struct {
 	name   string
-	pb     protomessage.ProtoMessage
+	pbPool sync.Pool
 	handle session.HandlerFunc
+}
+
+func (h *handler) Put(pb protomessage.ProtoMessage) {
+	proto.Reset(pb)
+	h.pbPool.Put(pb)
 }
 
 var Handlers sync.Map
@@ -46,7 +53,9 @@ func HandlersRoutes() []int32 {
 }
 
 func RegisterHandler(pb protomessage.ProtoMessage, hanHandlerFunc session.HandlerFunc) {
-	Handlers.Store(pb.MessageID(), &handler{name: pb.ModeName(), pb: pb, handle: hanHandlerFunc})
+	hd := &handler{name: pb.ModeName(), handle: hanHandlerFunc}
+	hd.pbPool = sync.Pool{New: func() any { return proto.Clone(pb) }}
+	Handlers.Store(pb.MessageID(), hd)
 }
 
 type model struct {

@@ -22,24 +22,24 @@ type Connection struct {
 	netpoll.Connection
 	*session.NetworkEntities
 	*packet.PackCodec
-	closed            atomic.Bool
 	writeQ            *queue.Queue[[]byte]
-	writeQCond        *sync.Cond
+	writeCond         *sync.Cond
+	closed            atomic.Bool
 	lastHeartBeatTime atomic.Int64
+	wg                sync.WaitGroup
 	ctx               context.Context
 	cancel            context.CancelFunc
-	wg                sync.WaitGroup
 }
 
 func NewConnection(conn netpoll.Connection, id, uid int64) *Connection {
 	c := &Connection{
 		Connection:      conn,
+		writeQ:          queue.New[[]byte](),
+		writeCond:       sync.NewCond(&sync.Mutex{}),
 		NetworkEntities: session.NewNetworkEntities(id, uid),
 		PackCodec:       packet.NewPackCodec(),
-		writeQ:          queue.New[[]byte](),
-		writeQCond:      sync.NewCond(&sync.Mutex{}),
 	}
-	c.ctx, c.cancel = context.WithCancel(context.TODO())
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.wg.Go(c.writeLoop)
 	return c
 }
@@ -52,16 +52,16 @@ func (c *Connection) IsClosed() bool {
 	return c.closed.Load()
 }
 
-func (c *Connection) GetLastHeartBeatTime() int64 {
+func (c *Connection) HeartbeatAt() int64 {
 	return c.lastHeartBeatTime.Load()
 }
 
-func (c *Connection) SetLastHeartBeatTime(now int64) {
+func (c *Connection) SetHeartbeatAt(now int64) {
 	c.lastHeartBeatTime.Store(now)
 }
 
-func (c *Connection) UdtHeartBeatTime() {
-	c.SetLastHeartBeatTime(time.Now().Unix())
+func (c *Connection) RefreshHeartbeat() {
+	c.SetHeartbeatAt(time.Now().Unix())
 }
 
 func (c *Connection) Send(pb protomessage.ProtoMessage) error {
@@ -71,15 +71,11 @@ func (c *Connection) Send(pb protomessage.ProtoMessage) error {
 	if defaultNodeAgent.node.Name == pb.NodeName() {
 		return c.SendTypePb(packet.Data, pb)
 	}
-	conn, err := defaultNodeAgent.getNodeByName(c, pb.NodeName())
-	if err != nil {
-		return err
-	}
 	pbdata, err := proto.Marshal(pb)
 	if err != nil {
 		return fmt.Errorf("[Connection/Send] Marshal %w", err)
 	}
-	return conn.SendPack(packet.NewInternal(packet.InternalData, pb.MessageID(), c.ID(), pbdata))
+	return remoteCall(c, c.PackCodec, packet.NewInternal(packet.InternalData, pb.MessageID(), c.ID(), pbdata), pb.NodeName())
 }
 
 func (c *Connection) SendPb(typ packet.Type, id int32, pb protomessage.ProtoMessage) error {
@@ -104,24 +100,22 @@ func (c *Connection) SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) e
 	return c.SendPack(packet.New(typ, pb.MessageID(), pbdata))
 }
 
-func (c *Connection) SendData(data []byte) error {
+func (c *Connection) SendData(bdata []byte) error {
 	if c.IsClosed() {
 		return errors.New("[Connection/SendData] connection closed")
 	}
-	c.writeQCond.L.Lock()
-	c.writeQ.Push(data)
-	c.writeQCond.Signal()
-	c.writeQCond.L.Unlock()
+	c.writeCond.L.Lock()
+	c.writeQ.Push(bdata)
+	c.writeCond.Signal()
+	c.writeCond.L.Unlock()
 	return nil
 }
 
 func (c *Connection) SendPack(pack *packet.Packet) error {
 	if c.IsClosed() {
-		pack.Free()
 		return errors.New("[Connection/SendPack] connection closed")
 	}
 	bdata, err := c.PackCodec.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
-	pack.Free()
 	if err != nil {
 		return fmt.Errorf("[Connection/Send] Pack %w", err)
 	}
@@ -130,13 +124,13 @@ func (c *Connection) SendPack(pack *packet.Packet) error {
 
 func (c *Connection) Close() error {
 	if !c.SetClosed() {
-		return errors.New("[Connection/Close] connection closed")
+		return nil
 	}
 	c.cancel()
 
-	c.writeQCond.L.Lock()
-	c.writeQCond.Signal()
-	c.writeQCond.L.Unlock()
+	c.writeCond.L.Lock()
+	c.writeCond.Signal()
+	c.writeCond.L.Unlock()
 
 	c.wg.Wait()
 	if c.Connection != nil {
@@ -155,13 +149,13 @@ func (c *Connection) writeLoop() {
 			return
 		default:
 		}
-		c.writeQCond.L.Lock()
+		c.writeCond.L.Lock()
 		if c.writeQ.Empty() {
 			runtime.Gosched()
-			c.writeQCond.Wait()
+			c.writeCond.Wait()
 		}
 		bdaba, _ := c.writeQ.PopSingleThread()
-		c.writeQCond.L.Unlock()
+		c.writeCond.L.Unlock()
 		if len(bdaba) == 0 {
 			continue
 		}
@@ -170,6 +164,6 @@ func (c *Connection) writeLoop() {
 			logx.Err.Println(err)
 			return
 		}
-		c.UdtHeartBeatTime()
+		c.RefreshHeartbeat()
 	}
 }

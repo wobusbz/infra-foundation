@@ -6,21 +6,20 @@ import (
 	"fmt"
 	"infra-foundation/logx"
 	"infra-foundation/packet"
-	"infra-foundation/pcall"
 	"infra-foundation/protomessage"
 	"infra-foundation/scheduler"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudwego/netpoll"
 	"google.golang.org/protobuf/proto"
 )
 
 type handler func(*TCPClient, protomessage.ProtoMessage)
 
 type TCPClient struct {
-	conn              netpoll.Connection
+	conn              net.Conn
 	codec             *packet.PackCodec
 	handlers          map[int32]handler
 	msgs              map[int32]protomessage.ProtoMessage
@@ -38,11 +37,12 @@ type TCPClient struct {
 
 func NewTCPClient() *TCPClient {
 	t := &TCPClient{
-		codec:     packet.NewPackCodec(),
-		handlers:  map[int32]handler{},
-		msgs:      map[int32]protomessage.ProtoMessage{},
-		writeC:    make(chan []byte, 1<<8),
-		scheduler: scheduler.NewScheduler(),
+		codec:         packet.NewPackCodec(),
+		handlers:      map[int32]handler{},
+		msgs:          map[int32]protomessage.ProtoMessage{},
+		writeC:        make(chan []byte, 1<<8),
+		scheduler:     scheduler.NewScheduler(),
+		heartbeatTime: time.Second * 3,
 	}
 	t.ctx, t.cancel = context.WithCancel(context.TODO())
 	return t
@@ -52,11 +52,11 @@ func (t *TCPClient) SetClosed() bool { return t.closed.CompareAndSwap(false, tru
 
 func (t *TCPClient) IsClosed() bool { return t.closed.Load() }
 
-func (t *TCPClient) GetLastHeartBeatTime() int64 { return t.lastHeartbeatTime.Load() }
+func (t *TCPClient) HeartbeatAt() int64 { return t.lastHeartbeatTime.Load() }
 
-func (t *TCPClient) SetLastHeartBeatTime(now int64) { t.lastHeartbeatTime.Store(now) }
+func (t *TCPClient) SetHeartbeatAt(now int64) { t.lastHeartbeatTime.Store(now) }
 
-func (t *TCPClient) UdtLastHeartBeatTime() { t.SetLastHeartBeatTime(time.Now().Unix()) }
+func (t *TCPClient) RefreshHeartbeat() { t.SetHeartbeatAt(time.Now().Unix()) }
 
 func (t *TCPClient) RegisterHandler(pb protomessage.ProtoMessage, handl handler) {
 	t.handlersrw.Lock()
@@ -67,13 +67,13 @@ func (t *TCPClient) RegisterHandler(pb protomessage.ProtoMessage, handl handler)
 
 func (t *TCPClient) DialConnection(addr string) error {
 	var err error
-	t.conn, err = netpoll.NewDialer().DialConnection("tcp", addr, time.Second)
+	t.conn, err = net.Dial("tcp", addr)
 	if err != nil {
 		return err
 	}
-	t.conn.SetOnRequest(t.OnRequest)
-	t.timerID, _ = t.scheduler.PushEvery(t.heartbeatTime, t.sendHeartBeat)
+	t.timerID, _ = t.scheduler.PushEvery(t.heartbeatTime, t.sendHeartbeat)
 	t.wg.Go(t.writeLoop)
+	t.wg.Go(t.readerLoop)
 	return err
 }
 
@@ -122,49 +122,43 @@ func (t *TCPClient) SendPack(pack *packet.Packet) error {
 	return t.SendData(bdata)
 }
 
-func (t *TCPClient) OnRequest(ctx context.Context, connection netpoll.Connection) error {
-	reader := connection.Reader()
-	buf, err := reader.Next(reader.Len())
-	if err != nil {
-		logx.Err.Println(err)
-		return fmt.Errorf("[TCPClient/OnRequest] Peek error %v", err)
-	}
-	pks, err := t.codec.Unpack(buf)
-	if err != nil {
-		logx.Err.Println(err)
-		return fmt.Errorf("[TCPClient/OnRequest] Unpack error %v", err)
-	}
-	var errs []error
-	for _, pk := range pks {
-		switch pk.Type() {
-		case packet.Connection:
-		case packet.Data:
-			t.handlersrw.RLock()
-			pb, ok1 := t.msgs[pk.ID()]
-			hd, ok2 := t.handlers[pk.ID()]
-			t.handlersrw.RUnlock()
-			if !ok1 || !ok2 {
-				errs = append(errs, fmt.Errorf("[TCPClient/OnRequest] message[%d] not found", pk.ID()))
-				pk.Free()
-				continue
-			}
-			bpb := proto.Clone(pb)
-			if err = proto.Unmarshal(pk.Data(), bpb); err != nil {
-				errs = append(errs, fmt.Errorf("[TCPClient/OnRequest] message[%d] proto Unmarshal error: %w", pk.ID(), err))
-				pk.Free()
-				continue
-			}
-			pcall.PcallF0(func() { hd(t, bpb.(protomessage.ProtoMessage)) })
-		case packet.BindConnection:
-		case packet.DisConnection:
+func (t *TCPClient) readerLoop() {
+	var bdata = make([]byte, 2048)
+	for {
+		n, err := t.conn.Read(bdata)
+		if err != nil {
+			logx.Err.Println(err)
+			return
 		}
-		pk.Free()
+		pks, err := t.codec.Unpack(bdata[:n])
+		if err != nil {
+			logx.Dbg.Println(err)
+			return
+		}
+		for _, pk := range pks {
+			switch pk.Type() {
+			case packet.Data:
+				t.handlersrw.RLock()
+				pb, ok1 := t.msgs[pk.ID()]
+				hd, ok2 := t.handlers[pk.ID()]
+				t.handlersrw.RUnlock()
+				if !ok1 || !ok2 {
+					pk.Free()
+					logx.Err.Printf("333 [TCPClient/ReaderLoop] message[%d] not found", pk.ID())
+					return
+				}
+				bpb := proto.Clone(pb)
+				if err = proto.Unmarshal(pk.Data(), bpb); err != nil {
+					logx.Err.Printf("444 [TCPClient/ReaderLoop] message[%d] proto Unmarshal error: %v", pk.ID(), err)
+					pk.Free()
+					return
+				}
+				t.scheduler.PushTask(func() { hd(t, bpb.(protomessage.ProtoMessage)) })
+			}
+			pk.Free()
+		}
+		t.RefreshHeartbeat()
 	}
-	err = errors.Join(errs...)
-	if err != nil {
-		logx.Err.Println(err)
-	}
-	return nil
 }
 
 func (t *TCPClient) Close() error {
@@ -172,35 +166,41 @@ func (t *TCPClient) Close() error {
 		return nil
 	}
 	t.cancel()
-	close(t.writeC)
 	t.wg.Wait()
+	close(t.writeC)
 	t.scheduler.CancelTimer(t.timerID)
 	t.scheduler.Stop()
 	return t.conn.Close()
 }
 
-func (t *TCPClient) sendHeartBeat() {
+func (t *TCPClient) sendHeartbeat() {
 	now := time.Now().Unix()
-	if t.GetLastHeartBeatTime()+int64(t.heartbeatTime.Seconds()) > now {
+	if t.HeartbeatAt()+int64(t.heartbeatTime.Seconds()) > now {
 		return
 	}
 	if err := t.SendPack(packet.New(packet.Heartbeat, 0, nil)); err != nil {
 		t.Close()
 		return
 	}
-	t.SetLastHeartBeatTime(now)
+	t.SetHeartbeatAt(now)
 }
 
 func (t *TCPClient) writeLoop() {
-	defer t.Close()
 	for {
 		select {
 		case <-t.ctx.Done():
 			return
-		case bdata := <-t.writeC:
-			_, err := t.conn.Write(bdata)
-			if err != nil {
-				logx.Err.Println(err)
+		case bdata, ok := <-t.writeC:
+			if !ok {
+				return
+			}
+			for off := 0; off < len(bdata); {
+				n, err := t.conn.Write(bdata[off:])
+				if err != nil {
+					logx.Err.Printf("[TCPClient/writeLoop] write error: %v", err)
+					return
+				}
+				off += n
 			}
 		}
 	}

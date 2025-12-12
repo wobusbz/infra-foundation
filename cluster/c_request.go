@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"infra-foundation/connmannger"
 	"infra-foundation/logx"
@@ -20,69 +19,72 @@ type ClientRequest struct {
 	modelManager *model.ModelManager
 	connManager  *connmannger.ConnManager
 	scheduler    *scheduler.Scheduler
+	workMessage  *WorkMessage
 }
 
 func NewClientRequest(svr Server) *ClientRequest {
-	c := &ClientRequest{modelManager: svr.ModelManager(), connManager: svr.ConnManager(), scheduler: svr.Scheduler()}
+	c := &ClientRequest{
+		modelManager: svr.ModelManager(),
+		connManager:  svr.ConnManager(),
+		scheduler:    svr.Scheduler(),
+		workMessage:  svr.WorkMessage(),
+	}
 	return c
 }
 
 func (c *ClientRequest) OnRequest(ctx context.Context, connection netpoll.Connection) error {
-	reader := connection.Reader()
-	buf, err := reader.Next(reader.Len())
+	r2, err := c.PackCodec.NextPacket(connection.Reader())
 	if err != nil {
-		logx.Err.Println(err)
 		return fmt.Errorf("[ClientRequest/OnRequest] Peek error %v", err)
 	}
-	pks, err := c.Unpack(buf)
-	if err != nil {
-		logx.Err.Println(err)
-		return fmt.Errorf("[ClientRequest/OnRequest] Unpack error %v", err)
+	if r2 == nil {
+		return nil
 	}
-	var errs = make([]error, 0, len(pks))
-	for _, pk := range pks {
-		errs = append(errs, c.onMessage(pk.Type(), pk.ID(), int64(pk.SID()), pk.Data()))
+	if err = c.workMessage.Put(c.ID(), func() {
+		pk, err := c.PackCodec.Unpack1(r2)
+		if err != nil {
+			logx.Err.Printf("[ClientRequest/OnRequest] Unpack error %v", err)
+			return
+		}
+		if err = c.onMessage(pk.Type(), pk.ID(), pk.SID(), pk.Data()); err != nil {
+			logx.Err.Println(err)
+		}
 		pk.Free()
-	}
-	err = errors.Join(errs...)
-	if err != nil {
+	}); err != nil {
 		logx.Err.Println(err)
 	}
 	return err
 }
 
 func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logx.Err.Printf("[ClientRequest/onMessage] panic recovered, typ=%d msgID=%d sid=%d err=%v\n", typ, id, sid, r)
+			err = fmt.Errorf("[ClientRequest/onMessage] panic: %v", r)
+		}
+	}()
 	switch typ {
 	case packet.Connection:
 		var pb = &M2NOnConnection{}
 		if err := proto.Unmarshal(bdata, pb); err != nil {
-			return fmt.Errorf("[ClientRequest/onMessage] Type: %d proto Unmarshal %w", typ, err)
+			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] Unmarshal %w", typ, c.ID(), err)
 		}
 		logx.Dbg.Println("[ClientRequest/OnRequest] ", pb, c.ClientConnection == nil)
 		defaultNodeAgent.storeNodeConn(pb.Name, pb.ID, c)
-	case packet.InternalData:
-		if !model.IsLocalHandler(id) {
-			return fmt.Errorf("[ClientRequest/onMessage] MessageID: %d not found", id)
+	case packet.DisConnection:
+		var pb N2MOnSessionClose
+		if err := proto.Unmarshal(bdata, &pb); err != nil {
+			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] Unmarshal %w", typ, c.ID(), err)
 		}
-		conn, ok := c.connManager.GetByID(sid)
+		conn, ok := c.connManager.GetByID(pb.SessionID)
 		if !ok {
-			return fmt.Errorf("[ClientRequest/onMessage] SessionID: %d not found", sid)
+			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, c.ID(), pb.SessionID)
 		}
-		err = c.modelManager.DispatchLocalAsync(conn, id, bdata)
-	case packet.ClientData:
-		conn, ok := c.connManager.GetByID(sid)
-		if !ok {
-			return fmt.Errorf("[ClientConnection/onMessage] SessionID: %d not found", id)
-		}
-		conn1, ok := conn.(interface{ SendData(data []byte) error })
-		if !ok {
-			return errors.New("[ServerRequest/onMessage] 反射 SendData")
-		}
-		err = conn1.SendData(bdata)
+		err = conn.Close()
 	case packet.BindConnection:
 		var pb N2MOnSessionBindServer
 		if err := proto.Unmarshal(bdata, &pb); err != nil {
-			return fmt.Errorf("[ClientRequest/onMessage] Type: %d proto Unmarshal %w", typ, err)
+			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] Unmarshal %w", typ, c.ID(), err)
 		}
 		conn, ok := c.connManager.GetByID(pb.SessionID)
 		if !ok {
@@ -92,20 +94,29 @@ func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []
 		for name, id := range pb.GetServers() {
 			conn.BindServers(name, id)
 		}
-		logx.Dbg.Printf("[ClientRequest/onMessage] BindConnection SessionID: %d %v", pb.SessionID, conn.Servers())
-	case packet.DisConnection:
-		var pb N2MOnSessionClose
-		if err := proto.Unmarshal(bdata, &pb); err != nil {
-			return fmt.Errorf("[ClientRequest/onMessage] Type: %d proto Unmarshal %w", typ, err)
+		logx.Dbg.Printf("[ClientRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d %v", typ, c.ID(), pb.SessionID, conn.Servers())
+	case packet.InternalData:
+		if !model.IsLocalHandler(id) {
+			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] MessageID: %d not found", typ, c.ID(), id)
 		}
-		conn, ok := c.connManager.GetByID(pb.SessionID)
+		conn, ok := c.connManager.GetByID(sid)
 		if !ok {
-			return fmt.Errorf("[ClientRequest/onMessage] MessageID: %d not found", pb.SessionID)
+			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, c.ID(), sid)
 		}
-		err = conn.Close()
+		err = c.modelManager.DispatchLocalAsync(conn, id, bdata)
+	case packet.ClientData:
+		conn, ok := c.connManager.GetByID(sid)
+		if !ok {
+			return fmt.Errorf("[ClientConnection/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, c.ID(), sid)
+		}
+		conn1, ok := conn.(interface{ SendData(data []byte) error })
+		if !ok {
+			return fmt.Errorf("[ClientConnection/onMessage] Type[%d] 反射 SendData", typ)
+		}
+		err = conn1.SendData(bdata)
 	}
 	if err == nil {
-		c.UdtHeartBeatTime()
+		c.RefreshHeartbeat()
 	}
 	return
 }

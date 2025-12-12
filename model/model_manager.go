@@ -114,12 +114,17 @@ func (m *ModelManager) DispatchLocalAsync(session session.Session, id int32, msg
 	if !ok {
 		return fmt.Errorf("[ModelManager/DispatchLocalAsync] %s Model not found", hand.name)
 	}
-	var pb = proto.Clone(hand.pb).(protomessage.ProtoMessage)
+
+	var pb protomessage.ProtoMessage
 	if len(msg) > 0 {
+		pb = hand.pbPool.Get().(protomessage.ProtoMessage)
 		if err := proto.Unmarshal(msg, pb); err != nil {
 			return fmt.Errorf("[ModelManager/DispatchLocalAsync] %d protomessage Unmarshal failed %w", id, err)
 		}
 	}
-	md.PostFunc(func() { hand.handle(session, pb) })
+	md.PostFunc(func() {
+		hand.handle(session, pb)
+		hand.Put(pb)
+	})
 	return nil
 }

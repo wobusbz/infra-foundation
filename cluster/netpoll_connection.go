@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"infra-foundation/connmannger"
 	"infra-foundation/logx"
 	"infra-foundation/scheduler"
 	"infra-foundation/session"
@@ -16,32 +15,30 @@ var _ session.Session = (*NetPollConnection)(nil)
 type NetPollConnection struct {
 	*Connection
 	*ServerRequest
-	connManager  *connmannger.ConnManager
-	chkHeartbeat time.Duration
-	timerId      scheduler.TimerID
-	closed       atomic.Bool
+	heartbeatInterval time.Duration
+	timerID           scheduler.TimerID
+	closed            atomic.Bool
 }
 
 func NewNetPollConnection(svrrequest *ServerRequest, connection netpoll.Connection, id int64) *NetPollConnection {
 	n := &NetPollConnection{
-		Connection:    NewConnection(connection, id, -1),
-		connManager:   defaultNodeAgent.connManager,
-		ServerRequest: svrrequest,
-		chkHeartbeat:  time.Second * 5,
+		Connection:        NewConnection(connection, id, -1),
+		ServerRequest:     svrrequest,
+		heartbeatInterval: time.Second * 5,
 	}
 
 	n.ServerRequest.connManager.StoreSession(n)
-	n.timerId, _ = n.scheduler.PushEvery(n.chkHeartbeat, n.checkHeartbeat)
+	n.timerID, _ = n.scheduler.PushEvery(n.heartbeatInterval, n.checkHeartbeat)
 	return n
 }
 
 func (n *NetPollConnection) checkHeartbeat() {
 	now := time.Now().Unix()
-	if n.GetLastHeartBeatTime() == 0 {
-		n.SetLastHeartBeatTime(now)
+	if n.HeartbeatAt() == 0 {
+		n.SetHeartbeatAt(now)
 		return
 	}
-	if n.GetLastHeartBeatTime()+int64(n.chkHeartbeat.Seconds()*2) > now {
+	if n.HeartbeatAt()+int64(n.heartbeatInterval.Seconds()*2) > now {
 		return
 	}
 	n.Close()
@@ -53,11 +50,11 @@ func (n *NetPollConnection) Close() error {
 		return nil
 	}
 	if n.UID() == -1 {
-		n.connManager.RemoveByID(n.ID())
+		defaultNodeAgent.connManager.RemoveByID(n.ID())
 	} else {
 		n.modelManager.OnDisconnection(n)
 		n.ServerRequest.connManager.RemoveByID(n.ID())
 	}
-	n.scheduler.CancelTimer(n.timerId)
-	return n.Close()
+	n.scheduler.CancelTimer(n.timerID)
+	return n.Connection.Close()
 }

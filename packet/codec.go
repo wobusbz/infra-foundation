@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+
+	"github.com/cloudwego/netpoll"
 )
 
 const (
@@ -12,9 +14,8 @@ const (
 )
 
 var (
+	ErrWrongPacketType  = errors.New("codec: wrong packet type")
 	ErrPacketSizeExcced = errors.New("codec: packet size exceed")
-	ErrPacketSizeExceed = errors.New("packet size exceed")
-	ErrIncomplete       = errors.New("incomplete packet")
 )
 
 type PackCodec struct {
@@ -38,14 +39,14 @@ func (p *PackCodec) Pack(typ Type, id int32, sid int64, payload []byte) ([]byte,
 	if p.isSidOffset(typ) {
 		total += 8
 	}
-
 	total += int(payloadLen)
 
 	buf := make([]byte, total)
 
-	buf[0] = byte(typ)
-	binary.BigEndian.PutUint32(buf[1:5], uint32(payloadLen))
+	binary.BigEndian.PutUint32(buf[:4], uint32(total))
+	buf[4] = byte(typ)
 	binary.BigEndian.PutUint32(buf[5:9], uint32(id))
+
 	offset := HeadLength
 
 	if p.isSidOffset(typ) {
@@ -57,37 +58,69 @@ func (p *PackCodec) Pack(typ Type, id int32, sid int64, payload []byte) ([]byte,
 	return buf, nil
 }
 
-func (p *PackCodec) Pack1(pack *Packet) ([]byte, error) {
-	if pack.typ < Heartbeat || (pack.typ >= Invalid) {
-		return nil, ErrWrongPacketType
+func (p *PackCodec) isSidOffset(typ Type) bool {
+	return typ == ClientData || typ == InternalData
+}
+
+func (p *PackCodec) NextPacket(reader netpoll.Reader) (netpoll.Reader, error) {
+	bLen, err := reader.Peek(4)
+	if err != nil {
+		if err == netpoll.ErrEOF {
+			return nil, nil
+		}
+		return nil, err
 	}
-	payloadLen := uint32(len(pack.data))
-	total := HeadLength
-	if p.isSidOffset(pack.typ) {
-		total += 8
+	pkLen := int(binary.BigEndian.Uint32(bLen))
+	if pkLen > reader.Len() {
+		return nil, nil
+	}
+	r2, err := reader.Slice(pkLen)
+	if err != nil {
+		return nil, err
+	}
+	return r2, nil
+}
+
+func (p *PackCodec) Unpack1(reader netpoll.Reader) (*Packet, error) {
+	bPkLen, err := reader.Next(4)
+	if err != nil {
+		return nil, err
+	}
+	pkLen := int(binary.BigEndian.Uint32(bPkLen))
+
+	btyp, err := reader.Next(1)
+	if err != nil {
+		return nil, err
 	}
 
-	total += int(payloadLen)
+	typ := Type(btyp[0])
 
-	buf := make([]byte, total)
+	bId, err := reader.Next(4)
+	if err != nil {
+		return nil, err
+	}
+	id := int32(binary.BigEndian.Uint32(bId))
 
-	buf[0] = byte(pack.typ)
-	binary.BigEndian.PutUint32(buf[1:5], uint32(payloadLen))
-	binary.BigEndian.PutUint32(buf[5:9], uint32(pack.id))
-
-	offset := HeadLength
-
-	if p.isSidOffset(pack.typ) {
-		binary.BigEndian.PutUint64(buf[offset:offset+8], uint64(pack.sid))
+	var offset int = HeadLength
+	var sid int64 = 0
+	if p.isSidOffset(typ) {
+		bsid, err := reader.Next(8)
+		if err != nil {
+			return nil, err
+		}
+		sid = int64(binary.BigEndian.Uint64(bsid))
 		offset += 8
 	}
 
-	copy(buf[offset:], pack.data)
-	return buf, nil
-}
+	payload, _ := reader.Next(pkLen - offset)
 
-func (p *PackCodec) isSidOffset(typ Type) bool {
-	return typ == ClientData || typ == InternalData
+	_ = reader.Release()
+	switch typ {
+	case InternalData, ClientData:
+		return NewInternal(typ, id, sid, payload), nil
+	default:
+		return New(typ, id, payload), nil
+	}
 }
 
 func (p *PackCodec) Unpack(data []byte) ([]*Packet, error) {
@@ -107,37 +140,33 @@ func (p *PackCodec) Unpack(data []byte) ([]*Packet, error) {
 			}
 
 			b := p.buf.Bytes()[:HeadLength]
+			pkLen := int32(binary.BigEndian.Uint32(b[:4]))
 
-			typ := Type(b[0])
+			if p.buf.Len() < int(pkLen) {
+				break
+			}
+
+			typ := Type(b[4])
 			if typ < Heartbeat || typ >= Invalid {
 				return packets, ErrWrongPacketType
 			}
-
-			payloadLen := int32(binary.BigEndian.Uint32(b[1:5]))
-			if payloadLen < 0 || payloadLen > MaxPacketSize {
-				return packets, ErrPacketSizeExceed
-			}
-
-			id := int32(binary.BigEndian.Uint32(b[5:9]))
 
 			offset := HeadLength
 			if p.isSidOffset(typ) {
 				offset += 8
 			}
 
-			if p.buf.Len() < offset {
-				break
-			}
+			id := int32(binary.BigEndian.Uint32(b[5:9]))
 
-			if p.buf.Len() < offset+int(payloadLen) {
-				break
+			payloadLen := int32(pkLen - int32(offset))
+			if payloadLen < 0 || payloadLen > MaxPacketSize {
+				return packets, ErrPacketSizeExcced
 			}
 
 			p.buf.Next(HeadLength)
 
 			if p.isSidOffset(typ) {
-				sidBytes := p.buf.Next(8)
-				p.sid = int64(binary.BigEndian.Uint64(sidBytes))
+				p.sid = int64(binary.BigEndian.Uint64(p.buf.Next(8)))
 			} else {
 				p.sid = 0
 			}
@@ -145,10 +174,9 @@ func (p *PackCodec) Unpack(data []byte) ([]*Packet, error) {
 			p.typ = typ
 			p.Id = id
 			p.size = payloadLen
-
 		}
 
-		if int(p.size) > p.buf.Len() {
+		if p.size == -1 || p.buf.Len() < int(p.size) {
 			break
 		}
 

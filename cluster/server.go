@@ -20,7 +20,9 @@ type Server interface {
 	ModelManager() *model.ModelManager
 	ConnManager() *connmannger.ConnManager
 	Scheduler() *scheduler.Scheduler
+	WorkMessage() *WorkMessage
 	Listen(addr string) error
+	Run(ctx context.Context)
 	Shutdown(ctx context.Context) error
 }
 
@@ -30,10 +32,16 @@ type server struct {
 	connManager  *connmannger.ConnManager
 	modelManager *model.ModelManager
 	scheduler    *scheduler.Scheduler
+	workMessage  *WorkMessage
 }
 
 func NewServer() Server {
-	s := &server{connManager: connmannger.NewConnManager(), modelManager: model.DefaultModelManager, scheduler: scheduler.NewScheduler()}
+	s := &server{
+		connManager:  connmannger.NewConnManager(),
+		modelManager: model.DefaultModelManager,
+		scheduler:    scheduler.NewScheduler(),
+		workMessage:  newWorkMessage(),
+	}
 
 	s.svrrequest = NewServerRequest(s)
 	defaultNodeAgent.storeServer(s)
@@ -46,6 +54,8 @@ func (s *server) ModelManager() *model.ModelManager { return s.modelManager }
 func (s *server) ConnManager() *connmannger.ConnManager { return s.connManager }
 
 func (s *server) Scheduler() *scheduler.Scheduler { return s.scheduler }
+
+func (s *server) WorkMessage() *WorkMessage { return s.workMessage }
 
 func (s *server) Listen(addr string) error {
 	logx.Inf.Printf("[START] TCP Server listener at Addr: %s is starting", addr)
@@ -69,10 +79,14 @@ func (s *server) Listen(addr string) error {
 	return err
 }
 
-func (s *server) Shutdown(ctx context.Context) error {
+func (s *server) Run(ctx context.Context) {
 	cg := make(chan os.Signal, 1)
 	signal.Notify(cg, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 	<-cg
+	_ = s.Shutdown(ctx)
+}
+
+func (s *server) Shutdown(ctx context.Context) error {
 	xctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 	s.scheduler.Stop()
