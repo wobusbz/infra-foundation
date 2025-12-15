@@ -51,10 +51,12 @@ func (s *ServerRequest) OnDisconnect(ctx context.Context, connection netpoll.Con
 func (s *ServerRequest) OnRequest(ctx context.Context, connection netpoll.Connection) error {
 	sconn, ok := ctx.Value(ctxKeyConnection).(*NetPollConnection)
 	if !ok {
+		logx.Err.Println("[ServerRequest/OnRequest] 反射当前连接实体失败")
 		return fmt.Errorf("[ServerRequest/OnRequest] 反射当前连接实体失败")
 	}
 	r2, err := sconn.PackCodec.NextPacket(connection.Reader())
 	if err != nil {
+		logx.Err.Printf("[ServerRequest/OnRequest] NextPacket error %v", err)
 		return fmt.Errorf("[ServerRequest/OnRequest] Peek error %v", err)
 	}
 	if r2 == nil {
@@ -77,12 +79,6 @@ func (s *ServerRequest) OnRequest(ctx context.Context, connection netpoll.Connec
 }
 
 func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id int32, sid int64, bdata []byte) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			logx.Err.Printf("[ServerRequest/onMessage] panic recovered, typ=%d msgID=%d sid=%d err=%v\n", typ, id, sid, r)
-			err = fmt.Errorf("[ServerRequest/onMessage] panic: %v", r)
-		}
-	}()
 	switch typ {
 	case packet.Heartbeat:
 	case packet.Data:
@@ -97,7 +93,7 @@ func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id 
 			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] proto Unmarshal %w", typ, sconn.ID(), err)
 		}
 		s.connManager.RemoveByID(sconn.ID())
-		defaultNodeAgent.storeNodeConn(pb.Name, pb.ID, sconn)
+		defaultNodeAgent.storeNodeConn(pb.ID, sconn)
 		logx.Dbg.Printf("[ServerRequest/onMessage] Type[%d]  %v", typ, pb)
 		err = sconn.SendTypePb(packet.Connection, &M2NOnConnection{
 			ID:       defaultNodeAgent.node.Id,
@@ -142,7 +138,7 @@ func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id 
 		if !ok {
 			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, sconn.ID(), sid)
 		}
-		conn1, ok := conn.(interface{ SendData(data []byte) error })
+		conn1, ok := conn.(sender)
 		if !ok {
 			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] 反射 SendData", typ, sconn.ID())
 		}

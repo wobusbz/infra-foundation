@@ -7,6 +7,7 @@ import (
 	"infra-foundation/connmannger"
 	"infra-foundation/logx"
 	"infra-foundation/packet"
+	"infra-foundation/protomessage"
 	"infra-foundation/session"
 	"maps"
 	"math/rand"
@@ -43,6 +44,11 @@ type NodeAgent struct {
 	groutes     map[int32]string
 	groutesrw   sync.RWMutex
 	connManager *connmannger.ConnManager
+}
+
+type sender interface {
+	SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error
+	SendData(data []byte) error
 }
 
 var (
@@ -97,7 +103,7 @@ func (n *NodeAgent) notifyCloseSession(s session.Session) error {
 		if !ok {
 			continue
 		}
-		errs = append(errs, conn.SendPb(packet.DisConnection, 0, &N2MOnSessionClose{SessionID: s.ID()}))
+		errs = append(errs, conn.(sender).SendTypePb(packet.DisConnection, &N2MOnSessionClose{SessionID: s.ID()}))
 	}
 	return errors.Join(errs...)
 }
@@ -139,11 +145,8 @@ func (n *NodeAgent) pick(name string, s session.Session) (session.Session, error
 	}
 	s.BindServers(name, node.Id)
 	s.BindServers(defaultNodeAgent.node.Name, defaultNodeAgent.node.Id)
-	return conn, conn.SendTypePb(packet.BindConnection, &N2MOnSessionBindServer{
-		SessionID: s.ID(),
-		UID:       s.UID(),
-		Servers:   s.Servers(),
-	})
+	pb := &N2MOnSessionBindServer{SessionID: s.ID(), UID: s.UID(), Servers: s.Servers()}
+	return conn, conn.(sender).SendTypePb(packet.BindConnection, pb)
 }
 
 func (n *NodeAgent) addNode(name, id, addr string, frontend bool, rids []int32) {
@@ -154,7 +157,7 @@ func (n *NodeAgent) addNode(name, id, addr string, frontend bool, rids []int32) 
 	n.m.Unlock()
 }
 
-func (n *NodeAgent) storeNodeConn(name, id string, conn session.Session) {
+func (n *NodeAgent) storeNodeConn(id string, conn session.Session) {
 	iid, _ := strconv.Atoi(id)
 	conn.BindID(int64(iid))
 	conn.BindUID(-1)
@@ -209,7 +212,11 @@ func (n *NodeAgent) removeByNameOrAddr(name, addr string) {
 func (n *NodeAgent) mapList() map[string][]*node {
 	n.m.RLock()
 	defer n.m.RUnlock()
-	return n.nodes
+	nodesCopy := make(map[string][]*node, len(n.nodes))
+	for k, v := range n.nodes {
+		nodesCopy[k] = append([]*node{}, v...)
+	}
+	return nodesCopy
 }
 
 func (n *NodeAgent) list(name string) []*node {

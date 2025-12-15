@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"infra-foundation/logx"
 	"infra-foundation/pcall"
 	"runtime"
 	"sync"
@@ -23,7 +24,7 @@ func newWorkMessage() *WorkMessage {
 		readerQ: make([]chan func(), runtime.NumCPU()),
 	}
 	for i := range w.readerQ {
-		w.readerQ[i] = make(chan func(), 1<<8)
+		w.readerQ[i] = make(chan func(), 1<<9)
 	}
 	w.ctx, w.cancel = context.WithCancel(context.Background())
 	w.wg.Go(w.runLoop)
@@ -31,23 +32,31 @@ func newWorkMessage() *WorkMessage {
 }
 
 func (w *WorkMessage) Put(id int64, cb func()) error {
+	idx := id % int64(len(w.readerQ))
+	idxQ := w.readerQ[id%int64(len(w.readerQ))]
+
+	if qLen := len(idxQ); qLen > 400 {
+		logx.War.Printf("[WorkMessage] queue %d near full: %d", idx, qLen)
+	}
+
 	ctx, cancel := context.WithTimeout(w.ctx, time.Second*3)
 	defer cancel()
 	select {
-	case w.readerQ[id%int64(len(w.readerQ))] <- cb:
+	case idxQ <- cb:
 	case <-ctx.Done():
-		// TODO FATA  非常严重了
-		return errors.New("[WorkMessage/Put] queue full")
+		// TODO FATAL  非常严重了
+		return errors.New("[WorkMessage/Put] queue full, degraded")
 	}
 	return nil
 }
 
 func (w *WorkMessage) runLoop() {
 	for i := range w.readerQ {
+		q := w.readerQ[i]
 		w.wg.Go(func() {
 			for {
 				select {
-				case cb := <-w.readerQ[i]:
+				case cb := <-q:
 					pcall.PcallF0(cb)
 				case <-w.ctx.Done():
 					return

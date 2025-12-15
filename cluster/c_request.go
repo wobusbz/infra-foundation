@@ -35,6 +35,7 @@ func NewClientRequest(svr Server) *ClientRequest {
 func (c *ClientRequest) OnRequest(ctx context.Context, connection netpoll.Connection) error {
 	r2, err := c.PackCodec.NextPacket(connection.Reader())
 	if err != nil {
+		logx.Err.Printf("[ClientRequest/OnRequest] NextPacket error %v", err)
 		return fmt.Errorf("[ClientRequest/OnRequest] Peek error %v", err)
 	}
 	if r2 == nil {
@@ -57,12 +58,6 @@ func (c *ClientRequest) OnRequest(ctx context.Context, connection netpoll.Connec
 }
 
 func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []byte) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			logx.Err.Printf("[ClientRequest/onMessage] panic recovered, typ=%d msgID=%d sid=%d err=%v\n", typ, id, sid, r)
-			err = fmt.Errorf("[ClientRequest/onMessage] panic: %v", r)
-		}
-	}()
 	switch typ {
 	case packet.Connection:
 		var pb = &M2NOnConnection{}
@@ -70,7 +65,7 @@ func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []
 			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] Unmarshal %w", typ, c.ID(), err)
 		}
 		logx.Dbg.Println("[ClientRequest/OnRequest] ", pb, c.ClientConnection == nil)
-		defaultNodeAgent.storeNodeConn(pb.Name, pb.ID, c)
+		defaultNodeAgent.storeNodeConn(pb.ID, c)
 	case packet.DisConnection:
 		var pb N2MOnSessionClose
 		if err := proto.Unmarshal(bdata, &pb); err != nil {
@@ -109,7 +104,7 @@ func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []
 		if !ok {
 			return fmt.Errorf("[ClientConnection/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, c.ID(), sid)
 		}
-		conn1, ok := conn.(interface{ SendData(data []byte) error })
+		conn1, ok := conn.(sender)
 		if !ok {
 			return fmt.Errorf("[ClientConnection/onMessage] Type[%d] 反射 SendData", typ)
 		}

@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"infra-foundation/logx"
@@ -9,7 +8,6 @@ import (
 	"infra-foundation/protomessage"
 	"infra-foundation/queue"
 	"infra-foundation/session"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,8 +25,6 @@ type Connection struct {
 	closed            atomic.Bool
 	lastHeartBeatTime atomic.Int64
 	wg                sync.WaitGroup
-	ctx               context.Context
-	cancel            context.CancelFunc
 }
 
 func NewConnection(conn netpoll.Connection, id, uid int64) *Connection {
@@ -39,7 +35,6 @@ func NewConnection(conn netpoll.Connection, id, uid int64) *Connection {
 		NetworkEntities: session.NewNetworkEntities(id, uid),
 		PackCodec:       packet.NewPackCodec(),
 	}
-	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.wg.Go(c.writeLoop)
 	return c
 }
@@ -78,17 +73,6 @@ func (c *Connection) Send(pb protomessage.ProtoMessage) error {
 	return remoteCall(c, c.PackCodec, packet.NewInternal(packet.InternalData, pb.MessageID(), c.ID(), pbdata), pb.NodeName())
 }
 
-func (c *Connection) SendPb(typ packet.Type, id int32, pb protomessage.ProtoMessage) error {
-	if c.IsClosed() {
-		return errors.New("[Connection/SendPb] connection closed")
-	}
-	pbdata, err := proto.Marshal(pb)
-	if err != nil {
-		return fmt.Errorf("[Connection/SendPb] Marshal %w", err)
-	}
-	return c.SendPack(packet.New(typ, id, pbdata))
-}
-
 func (c *Connection) SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error {
 	if c.IsClosed() {
 		return errors.New("[Connection/Send] connection closed")
@@ -122,11 +106,14 @@ func (c *Connection) SendPack(pack *packet.Packet) error {
 	return c.SendData(bdata)
 }
 
+func (c *Connection) Notify(s []*session.Session, pb protomessage.ProtoMessage) error {
+	return nil
+}
+
 func (c *Connection) Close() error {
 	if !c.SetClosed() {
 		return nil
 	}
-	c.cancel()
 
 	c.writeCond.L.Lock()
 	c.writeCond.Signal()
@@ -144,18 +131,17 @@ func (c *Connection) Close() error {
 func (c *Connection) writeLoop() {
 	defer func() { c.Close() }()
 	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
 		c.writeCond.L.Lock()
-		if c.writeQ.Empty() {
-			runtime.Gosched()
+		for c.writeQ.Empty() && !c.IsClosed() {
 			c.writeCond.Wait()
+		}
+		if c.IsClosed() {
+			c.writeCond.L.Unlock()
+			return
 		}
 		bdaba, _ := c.writeQ.PopSingleThread()
 		c.writeCond.L.Unlock()
+
 		if len(bdaba) == 0 {
 			continue
 		}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -19,8 +20,9 @@ type EtcdServiceDiscovery struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	preKey    string
-	closeOnce sync.Once
+	closed    atomic.Bool
 	ttl       int64
+	wg        sync.WaitGroup
 }
 
 func NewEtcdServiceDiscovery(preKey string, addr string) (*EtcdServiceDiscovery, error) {
@@ -30,7 +32,7 @@ func NewEtcdServiceDiscovery(preKey string, addr string) (*EtcdServiceDiscovery,
 	}
 	e := &EtcdServiceDiscovery{preKey: preKey, nodeAgent: defaultNodeAgent, client: client, ttl: 5}
 	e.ctx, e.cancel = context.WithCancel(context.TODO())
-	go e.watch()
+	e.wg.Go(e.watch)
 	return e, nil
 }
 
@@ -63,7 +65,12 @@ func (e *EtcdServiceDiscovery) RegisterService(name, advertiseAddr string, front
 	}
 	go func() {
 		for {
-			if v := <-krsp; v == nil {
+			select {
+			case v, ok := <-krsp:
+				if !ok || v == nil {
+					return
+				}
+			case <-e.ctx.Done():
 				return
 			}
 		}
@@ -71,19 +78,13 @@ func (e *EtcdServiceDiscovery) RegisterService(name, advertiseAddr string, front
 	return nil
 }
 
-func (e *EtcdServiceDiscovery) MapList() map[string][]*node {
-	return e.nodeAgent.mapList()
-}
-
-func (e *EtcdServiceDiscovery) List(name string) []*node {
-	return e.nodeAgent.list(name)
-}
-
-func (e *EtcdServiceDiscovery) Close() {
-	e.closeOnce.Do(func() {
-		e.client.Close()
-		e.cancel()
-	})
+func (e *EtcdServiceDiscovery) Close() error {
+	if !e.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	e.cancel()
+	e.wg.Wait()
+	return e.client.Close()
 }
 
 func (e *EtcdServiceDiscovery) parseKey(k []byte) (kname, nid string, err error) {

@@ -74,6 +74,17 @@ func (p *PackCodec) NextPacket(reader netpoll.Reader) (netpoll.Reader, error) {
 	if pkLen > reader.Len() {
 		return nil, nil
 	}
+	if pkLen > MaxPacketSize {
+		return nil, ErrPacketSizeExcced
+	}
+	btyp, err := reader.Peek(5)
+	if err != nil {
+		return nil, err
+	}
+	typ := Type(btyp[4])
+	if typ < Heartbeat || typ >= Invalid {
+		return nil, ErrWrongPacketType
+	}
 	r2, err := reader.Slice(pkLen)
 	if err != nil {
 		return nil, err

@@ -1,7 +1,6 @@
 package session
 
 import (
-	"infra-foundation/networkentities"
 	protomessage "infra-foundation/protomessage"
 	"maps"
 	"sync"
@@ -45,7 +44,9 @@ type Session interface {
 	GetServers(name string) string
 	BindServers(name, id string)
 	Servers() map[string]string
-	networkentities.NetworkEntitieser
+	Send(pb protomessage.ProtoMessage) error
+	Notify(s []*Session, pb protomessage.ProtoMessage) error
+	Close() error
 }
 
 type NetworkEntities struct {

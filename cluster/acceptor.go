@@ -36,36 +36,8 @@ func (a *acceptor) Send(pb protomessage.ProtoMessage) error {
 	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, 0, a.ID(), bdata), pb.NodeName())
 }
 
-func (a *acceptor) SendPb(typ packet.Type, id int32, pb protomessage.ProtoMessage) error {
-	pdata, err := proto.Marshal(pb)
-	if err != nil {
-		return fmt.Errorf("[acceptor/SendPb] proto Marshal %w", err)
-	}
-	bdata, err := a.codec.Pack(typ, id, a.ID(), pdata)
-	if err != nil {
-		return fmt.Errorf("[acceptor/SendPb] codec Pack %w", err)
-	}
-	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, id, a.ID(), bdata), pb.NodeName())
-}
-
-func (a *acceptor) SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error {
-	pdata, err := proto.Marshal(pb)
-	if err != nil {
-		return fmt.Errorf("[acceptor/SendTypePb] proto Marshal %w", err)
-	}
-	bdata, err := a.codec.Pack(typ, pb.MessageID(), a.ID(), pdata)
-	if err != nil {
-		return fmt.Errorf("[acceptor/SendTypePb] codec Pack %w", err)
-	}
-	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, pb.MessageID(), a.ID(), bdata), pb.NodeName())
-}
-
-func (a *acceptor) SendPack(pack *packet.Packet) error {
-	bdata, err := a.codec.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
-	if err != nil {
-		return fmt.Errorf("[acceptor/SendPack] codec Pack %w", err)
-	}
-	return remoteCall(a, a.codec, packet.NewInternal(packet.ClientData, pack.ID(), a.ID(), bdata), "")
+func (a *acceptor) Notify(s []*session.Session, pb protomessage.ProtoMessage) error {
+	return nil
 }
 
 func (a *acceptor) Close() error {

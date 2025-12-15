@@ -14,5 +14,4 @@ func main() {
 		panic(err)
 	}
 	logx.Dbg.Println(discovery.RegisterService(os.Args[1], fmt.Sprintf("127.0.0.1:%d", 1000+rand.Int()%4), true, nil))
-	logx.Dbg.Println(discovery.List(os.Args[1]))
 }

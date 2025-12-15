@@ -16,18 +16,17 @@ func remoteCall(s session.Session, p *packet.PackCodec, pack *packet.Packet, nod
 		if err != nil {
 			return err
 		}
+	case defaultNodeAgent.node.Frontend:
+		agent = s
 	default:
-		if defaultNodeAgent.node.Frontend {
-			conn1 := s.(interface{ SendData(data []byte) error })
-			bdata, _ := p.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
-			return conn1.SendData(bdata)
-		}
 		agent, err = defaultNodeAgent.getGateNode(s)
 		if err != nil {
 			return err
 		}
 	}
-	conn1 := agent.(interface{ SendData(data []byte) error })
-	bdata, _ := p.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
-	return conn1.SendData(bdata)
+	bdata, err := p.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
+	if err != nil {
+		return err
+	}
+	return agent.(sender).SendData(bdata)
 }

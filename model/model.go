@@ -26,12 +26,16 @@ type Model interface {
 }
 
 type handler struct {
+	*model
 	name   string
 	pbPool sync.Pool
 	handle session.HandlerFunc
 }
 
 func (h *handler) Put(pb protomessage.ProtoMessage) {
+	if pb == nil {
+		return
+	}
 	proto.Reset(pb)
 	h.pbPool.Put(pb)
 }
@@ -54,7 +58,8 @@ func HandlersRoutes() []int32 {
 
 func RegisterHandler(pb protomessage.ProtoMessage, hanHandlerFunc session.HandlerFunc) {
 	hd := &handler{name: pb.ModeName(), handle: hanHandlerFunc}
-	hd.pbPool = sync.Pool{New: func() any { return proto.Clone(pb) }}
+	pbType := reflect.TypeOf(pb).Elem()
+	hd.pbPool = sync.Pool{New: func() any { return reflect.New(pbType).Interface().(protomessage.ProtoMessage) }}
 	Handlers.Store(pb.MessageID(), hd)
 }
 
