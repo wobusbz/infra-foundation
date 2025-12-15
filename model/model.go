@@ -173,8 +173,8 @@ func (m *model) CallSyncWithContext(ctx context.Context, name string, args ...an
 }
 
 func (m *model) Stop() {
-	if m != nil {
-		m.OnStop()
+	if m.Model != nil {
+		m.Model.OnStop()
 	}
 	m.scheduler.Stop()
 }
