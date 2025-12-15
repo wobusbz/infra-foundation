@@ -84,7 +84,7 @@ func PcallN(method reflect.Method, args []reflect.Value) (resurt []reflect.Value
 	return nil, nil
 }
 
-func PcallF0(callback func()) {
+func PcallF0(cb func()) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			stackTrace := debug.Stack()
@@ -98,5 +98,5 @@ func PcallF0(callback func()) {
 			logx.Err.Printf("panic - dispatch:  panicData=%v stackTrace=%s error: %v\n", rec, stackTraceAsRawStringLiteral, err)
 		}
 	}()
-	callback()
+	cb()
 }
