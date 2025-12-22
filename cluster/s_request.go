@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"infra-foundation/connmannger"
 	"infra-foundation/logx"
@@ -143,6 +144,37 @@ func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id 
 			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] 反射 SendData", typ, sconn.ID())
 		}
 		err = conn1.SendData(bdata)
+	case packet.NotifyData:
+		var pb N2MNotify
+		if err := proto.Unmarshal(bdata, &pb); err != nil {
+			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] Unmarshal %w", typ, sconn.ID(), err)
+		}
+		if len(pb.SessionID) == 0 {
+			return s.connManager.Range(func(s session.Session) error {
+				conn1, ok := s.(sender)
+				if !ok {
+					return fmt.Errorf("[ServerRequest/onMessage] Range Type[%d] 反射 SendData", typ)
+				}
+				return conn1.SendData(pb.Plyload)
+			})
+		}
+		var errs []error
+		for _, sid := range pb.SessionID {
+			conn, ok := s.connManager.GetByID(sid)
+			if !ok {
+				errs = append(errs, fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, sconn.ID(), sid))
+				continue
+			}
+			conn1, ok := conn.(sender)
+			if !ok {
+				errs = append(errs, fmt.Errorf("[ServerRequest/onMessage] Type[%d] 反射 SendData", typ))
+				continue
+			}
+			errs = append(errs, conn1.SendData(bdata))
+		}
+		if err = errors.Join(errs...); err != nil {
+			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] Notify error: %w", typ, err)
+		}
 	}
 	if err == nil {
 		sconn.RefreshHeartbeat()

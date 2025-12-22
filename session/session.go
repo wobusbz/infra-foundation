@@ -45,7 +45,7 @@ type Session interface {
 	BindServers(name, id string)
 	Servers() map[string]string
 	Send(pb protomessage.ProtoMessage) error
-	Notify(s []*Session, pb protomessage.ProtoMessage) error
+	Notify(s []Session, pb protomessage.ProtoMessage) error
 	Close() error
 }
 

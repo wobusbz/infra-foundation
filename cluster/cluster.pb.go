@@ -306,6 +306,58 @@ func (x *N2MOnSessionClose) GetSessionID() int64 {
 	return 0
 }
 
+type N2MNotify struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionID     []int64                `protobuf:"varint,1,rep,packed,name=SessionID,proto3" json:"SessionID,omitempty"`
+	Plyload       []byte                 `protobuf:"bytes,2,opt,name=Plyload,proto3" json:"Plyload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *N2MNotify) Reset() {
+	*x = N2MNotify{}
+	mi := &file_cluster_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *N2MNotify) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*N2MNotify) ProtoMessage() {}
+
+func (x *N2MNotify) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use N2MNotify.ProtoReflect.Descriptor instead.
+func (*N2MNotify) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *N2MNotify) GetSessionID() []int64 {
+	if x != nil {
+		return x.SessionID
+	}
+	return nil
+}
+
+func (x *N2MNotify) GetPlyload() []byte {
+	if x != nil {
+		return x.Plyload
+	}
+	return nil
+}
+
 var File_cluster_proto protoreflect.FileDescriptor
 
 const file_cluster_proto_rawDesc = "" +
@@ -331,7 +383,10 @@ const file_cluster_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"1\n" +
 	"\x11N2MOnSessionClose\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x01(\x03R\tSessionIDB\fZ\n" +
+	"\tSessionID\x18\x01 \x01(\x03R\tSessionID\"C\n" +
+	"\tN2MNotify\x12\x1c\n" +
+	"\tSessionID\x18\x01 \x03(\x03R\tSessionID\x12\x18\n" +
+	"\aPlyload\x18\x02 \x01(\fR\aPlyloadB\fZ\n" +
 	"./;clusterb\x06proto3"
 
 var (
@@ -346,17 +401,18 @@ func file_cluster_proto_rawDescGZIP() []byte {
 	return file_cluster_proto_rawDescData
 }
 
-var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_cluster_proto_goTypes = []any{
 	(*N2MSend)(nil),                // 0: cluster.N2MSend
 	(*N2MOnConnection)(nil),        // 1: cluster.N2MOnConnection
 	(*M2NOnConnection)(nil),        // 2: cluster.M2NOnConnection
 	(*N2MOnSessionBindServer)(nil), // 3: cluster.N2MOnSessionBindServer
 	(*N2MOnSessionClose)(nil),      // 4: cluster.N2MOnSessionClose
-	nil,                            // 5: cluster.N2MOnSessionBindServer.ServersEntry
+	(*N2MNotify)(nil),              // 5: cluster.N2MNotify
+	nil,                            // 6: cluster.N2MOnSessionBindServer.ServersEntry
 }
 var file_cluster_proto_depIdxs = []int32{
-	5, // 0: cluster.N2MOnSessionBindServer.Servers:type_name -> cluster.N2MOnSessionBindServer.ServersEntry
+	6, // 0: cluster.N2MOnSessionBindServer.Servers:type_name -> cluster.N2MOnSessionBindServer.ServersEntry
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -375,7 +431,7 @@ func file_cluster_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cluster_proto_rawDesc), len(file_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

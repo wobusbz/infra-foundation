@@ -26,6 +26,7 @@ const (
 	BindConnection
 	InternalData
 	ClientData
+	NotifyData
 	Invalid
 )
 

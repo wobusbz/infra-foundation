@@ -106,8 +106,15 @@ func (c *Connection) SendPack(pack *packet.Packet) error {
 	return c.SendData(bdata)
 }
 
-func (c *Connection) Notify(s []*session.Session, pb protomessage.ProtoMessage) error {
-	return nil
+func (c *Connection) Notify(s []session.Session, pb protomessage.ProtoMessage) error {
+	if len(s) == 0 {
+		return defaultNodeAgent.svr.ConnManager().Range(func(s session.Session) error { return s.Send(pb) })
+	}
+	var errs []error
+	for _, sv := range s {
+		errs = append(errs, sv.Send(pb))
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Connection) Close() error {
