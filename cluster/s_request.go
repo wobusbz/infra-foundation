@@ -170,7 +170,7 @@ func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id 
 				errs = append(errs, fmt.Errorf("[ServerRequest/onMessage] Type[%d] 反射 SendData", typ))
 				continue
 			}
-			errs = append(errs, conn1.SendData(bdata))
+			errs = append(errs, conn1.SendData(pb.Plyload))
 		}
 		if err = errors.Join(errs...); err != nil {
 			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] Notify error: %w", typ, err)

@@ -47,13 +47,25 @@ func (a *acceptor) Notify(s []session.Session, pb protomessage.ProtoMessage) err
 		return fmt.Errorf("[acceptor/Notify] codec Pack %w", err)
 	}
 	var tempSession = map[int64][]int64{}
-	for _, sv := range s {
-		agent, err := defaultNodeAgent.getGateNode(sv)
-		if err != nil {
-			return err
+	if len(s) == 0 {
+		a.connManager.Range(func(s session.Session) error {
+			agent, err := defaultNodeAgent.getGateNode(s)
+			if err != nil {
+				return err
+			}
+			tempSession[agent.ID()] = append(tempSession[agent.ID()], s.ID())
+			return nil
+		})
+	} else {
+		for _, sv := range s {
+			agent, err := defaultNodeAgent.getGateNode(sv)
+			if err != nil {
+				return err
+			}
+			tempSession[agent.ID()] = append(tempSession[agent.ID()], sv.ID())
 		}
-		tempSession[agent.ID()] = append(tempSession[agent.ID()], sv.ID())
 	}
+
 	var pb2 = &N2MNotify{}
 	var errs []error
 	for sid, usids := range tempSession {
@@ -67,7 +79,11 @@ func (a *acceptor) Notify(s []session.Session, pb protomessage.ProtoMessage) err
 		if !ok {
 			return fmt.Errorf("[acceptor/Notify] %d not found", sid)
 		}
-		errs = append(errs, remoteCall(asion, a.codec, packet.New(packet.NotifyData, 0, bdata2), pb.NodeName()))
+		bdata, err := a.codec.Pack(packet.NotifyData, 0, 0, bdata2)
+		if err != nil {
+			return err
+		}
+		errs = append(errs, asion.(sender).SendData(bdata))
 	}
 	if err = errors.Join(errs...); err != nil {
 		return fmt.Errorf("[acceptor/Notify] remoteCall %w", err)

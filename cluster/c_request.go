@@ -136,7 +136,7 @@ func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []
 				errs = append(errs, fmt.Errorf("[ClientConnection/onMessage] Type[%d] 反射 SendData", typ))
 				continue
 			}
-			errs = append(errs, conn1.SendData(bdata))
+			errs = append(errs, conn1.SendData(pb.Plyload))
 		}
 		if err = errors.Join(errs...); err != nil {
 			return fmt.Errorf("[ClientConnection/onMessage] Type[%d] Notify error: %w", typ, err)

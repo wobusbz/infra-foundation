@@ -7,31 +7,41 @@ import (
 	"sync/atomic"
 )
 
-var DefaultConnSession = defaultConnectionSession{}
+var DefaultConnSession = defaultConnectionSession{ids: map[int64]struct{}{}}
 
 type defaultConnectionSession struct {
-	id    atomic.Int64
-	count atomic.Int64
-}
-
-func (d *defaultConnectionSession) Increment() {
-	d.count.Add(1)
-}
-
-func (d *defaultConnectionSession) Decrement() {
-	d.count.Add(-1)
+	ids   map[int64]struct{}
+	idsrw sync.RWMutex
 }
 
 func (d *defaultConnectionSession) Count() int64 {
-	return d.count.Load()
+	return int64(len(d.ids))
+}
+
+func (d *defaultConnectionSession) Remove(id int64) {
+	d.idsrw.Lock()
+	delete(d.ids, id)
+	d.idsrw.Unlock()
 }
 
 func (d *defaultConnectionSession) Reset() {
-	d.count.Store(0)
+	d.idsrw.Lock()
+	d.ids = map[int64]struct{}{}
+	d.idsrw.Unlock()
 }
 
 func (d *defaultConnectionSession) SessionID() int64 {
-	return d.id.Add(1)
+	d.idsrw.Lock()
+	defer d.idsrw.Unlock()
+	var id int64 = 1
+	for {
+		if _, ok := d.ids[id]; !ok {
+			break
+		}
+		id++
+	}
+	d.ids[id] = struct{}{}
+	return id
 }
 
 type HandlerFunc func(Session, protomessage.ProtoMessage)

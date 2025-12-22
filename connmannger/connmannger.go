@@ -52,6 +52,7 @@ func (c *ConnManager) RemoveByID(id int64) {
 	}
 	delete(c.idToSession, id)
 	delete(c.uidToSession, s.UID())
+	session.DefaultConnSession.Remove(id)
 }
 
 func (c *ConnManager) RemoveByUID(uid int64) {
@@ -63,6 +64,7 @@ func (c *ConnManager) RemoveByUID(uid int64) {
 	}
 	delete(c.idToSession, id)
 	delete(c.uidToSession, uid)
+	session.DefaultConnSession.Remove(id)
 }
 
 func (c *ConnManager) Range(cb func(s session.Session) error) error {
