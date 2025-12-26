@@ -14,5 +14,5 @@ func TestPushTimer(t *testing.T) {
 	s.PushInfiniteTimer(time.Second*5, true, func() {
 		log.Println("hello world 2222222222222")
 	})
-	time.Sleep(time.Second * 20)
+	time.Sleep(time.Second * 21)
 }

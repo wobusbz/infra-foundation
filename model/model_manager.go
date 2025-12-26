@@ -49,6 +49,7 @@ func (m *ModelManager) Register(model Model) error {
 
 func (m *ModelManager) Stop() error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	for i := len(m.order) - 1; i >= 0; i-- {
 		w, ok := m.modes[m.order[i]]
 		if !ok {
@@ -56,22 +57,17 @@ func (m *ModelManager) Stop() error {
 		}
 		w.Stop()
 	}
-	m.mu.Unlock()
 	return nil
-}
-
-func (m *ModelManager) OnConnection(session session.Session) {
-	m.mu.RLock()
-	for range m.order {
-		//m.modes[name].scheduler.PushTask(func() { m.modes[name].OnConnection(session) })
-	}
-	m.mu.RUnlock()
 }
 
 func (m *ModelManager) OnDisconnection(session session.Session) {
 	m.mu.RLock()
 	for _, name := range m.order {
-		m.modes[name].scheduler.PushTask(func() { m.modes[name].OnDisconnection(session) })
+		md, ok := m.modes[name]
+		if !ok {
+			continue
+		}
+		md.OnDisconnection(session)
 	}
 	m.mu.RUnlock()
 }
@@ -101,7 +97,7 @@ func (m *ModelManager) Unregister(name string) error {
 	return nil
 }
 
-func (m *ModelManager) DispatchLocalAsync(session session.Session, id int32, msg []byte) error {
+func (m *ModelManager) DispatchAsync(session session.Session, id int32, msg []byte) error {
 	value, ok := Handlers.Load(id)
 	if !ok {
 		return fmt.Errorf("[ModelManager/DispatchLocalAsync] %d handlers not found", id)
@@ -110,8 +106,11 @@ func (m *ModelManager) DispatchLocalAsync(session session.Session, id int32, msg
 	if !ok {
 		return errors.New("[ModelManager/DispatchLocalAsync] reflect *handler failed")
 	}
-	if hand.model == nil {
-		md, ok := m.GetModel(hand.name)
+
+	md := hand.model
+	if md == nil {
+		var ok bool
+		md, ok = m.GetModel(hand.name)
 		if !ok {
 			return fmt.Errorf("[ModelManager/DispatchLocalAsync] %s Model not found", hand.name)
 		}
@@ -122,10 +121,12 @@ func (m *ModelManager) DispatchLocalAsync(session session.Session, id int32, msg
 	if len(msg) > 0 {
 		pb = hand.pbPool.Get().(protomessage.ProtoMessage)
 		if err := proto.Unmarshal(msg, pb); err != nil {
+			hand.Put(pb)
 			return fmt.Errorf("[ModelManager/DispatchLocalAsync] %d protomessage Unmarshal failed %w", id, err)
 		}
 	}
-	hand.PostFunc(func() {
+
+	md.PostFunc(func() {
 		hand.handle(session, pb)
 		hand.Put(pb)
 	})

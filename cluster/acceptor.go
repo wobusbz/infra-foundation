@@ -48,14 +48,16 @@ func (a *acceptor) Notify(s []session.Session, pb protomessage.ProtoMessage) err
 	}
 	var tempSession = map[int64][]int64{}
 	if len(s) == 0 {
-		a.connManager.Range(func(s session.Session) error {
+		if err = a.connManager.Range(func(s session.Session) error {
 			agent, err := defaultNodeAgent.getGateNode(s)
 			if err != nil {
 				return err
 			}
 			tempSession[agent.ID()] = append(tempSession[agent.ID()], s.ID())
 			return nil
-		})
+		}); err != nil {
+			return fmt.Errorf("[acceptor/Notify] Range %w", err)
+		}
 	} else {
 		for _, sv := range s {
 			agent, err := defaultNodeAgent.getGateNode(sv)

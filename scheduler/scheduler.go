@@ -3,21 +3,17 @@ package scheduler
 import (
 	"errors"
 	"infra-foundation/logx"
-	"infra-foundation/queue"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-type TimerFunc func()
-type TimerID uint64
-
 type Scheduler struct {
 	chDie     chan struct{}
-	qTask     *queue.Queue[TimerFunc]
-	qTaskCond *sync.Cond
+	taskLock  sync.Mutex
+	taskCond  *sync.Cond
+	tasks     []TimerFunc
 	started   atomic.Bool
 	timeWheel *TimerWheel
 	tick      time.Duration
@@ -43,17 +39,17 @@ func NewSchedulerWith(slotNum int, tick time.Duration) *Scheduler {
 	}
 
 	s := &Scheduler{
-		chDie:     make(chan struct{}),
-		qTask:     queue.New[TimerFunc](),
-		qTaskCond: sync.NewCond(&sync.Mutex{}),
-		tick:      tick,
-		slotNum:   slotNum,
+		chDie:   make(chan struct{}),
+		tasks:   make([]TimerFunc, 0, 4096),
+		tick:    tick,
+		slotNum: slotNum,
 	}
+	s.taskCond = sync.NewCond(&s.taskLock)
 	s.timeWheel = newTimerWheel(slotNum, tick, s)
 	s.started.Store(true)
 
 	s.wg.Go(s.sched)
-	s.wg.Go(s.runQueuedTasks)
+	s.wg.Go(s.runExecutor)
 	return s
 }
 
@@ -62,9 +58,11 @@ func (s *Scheduler) Stop() {
 		return
 	}
 	close(s.chDie)
-	s.qTaskCond.L.Lock()
-	s.qTaskCond.Signal()
-	s.qTaskCond.L.Unlock()
+
+	s.taskLock.Lock()
+	s.taskCond.Broadcast()
+	s.taskLock.Unlock()
+
 	s.Wait()
 }
 
@@ -86,24 +84,31 @@ func (s *Scheduler) sched() {
 	}
 }
 
-func (s *Scheduler) runQueuedTasks() {
+func (s *Scheduler) runExecutor() {
+	s.taskLock.Lock()
+	defer s.taskLock.Unlock()
+
 	for {
-		select {
-		case <-s.chDie:
-			logx.Dbg.Println("runQueuedTasks die")
-			return
-		default:
+		for len(s.tasks) == 0 {
+			if !s.started.Load() {
+				return
+			}
+			s.taskCond.Wait()
 		}
-		s.qTaskCond.L.Lock()
-		if s.qTask.Empty() {
-			runtime.Gosched()
-			s.qTaskCond.Wait()
+
+		fn := s.tasks[0]
+
+		s.tasks = s.tasks[1:]
+
+		if len(s.tasks) == 0 {
+			s.tasks = s.tasks[:0]
 		}
-		f, _ := s.qTask.PopSingleThread()
-		s.qTaskCond.L.Unlock()
-		if f != nil {
-			try(f)
-		}
+
+		s.taskLock.Unlock()
+
+		try(fn)
+
+		s.taskLock.Lock()
 	}
 }
 
@@ -111,10 +116,11 @@ func (s *Scheduler) PushTask(fn TimerFunc) {
 	if !s.started.Load() || fn == nil {
 		return
 	}
-	s.qTaskCond.L.Lock()
-	s.qTask.Push(fn)
-	s.qTaskCond.Signal()
-	s.qTaskCond.L.Unlock()
+
+	s.taskLock.Lock()
+	s.tasks = append(s.tasks, fn)
+	s.taskCond.Signal()
+	s.taskLock.Unlock()
 }
 
 func (s *Scheduler) PushAfter(delay time.Duration, fn TimerFunc) (TimerID, error) {

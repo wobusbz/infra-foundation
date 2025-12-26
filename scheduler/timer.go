@@ -1,11 +1,14 @@
 package scheduler
 
 import (
-	"container/list"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type TimerFunc func()
+
+type TimerID uint64
 
 type Timer struct {
 	id        TimerID
@@ -14,31 +17,75 @@ type Timer struct {
 	recurring bool
 	rounds    int
 	ticks     int
-	elem      *list.Element
 	slot      int
+
+	prev *Timer
+	next *Timer
+	list *TimerList
+}
+
+type TimerList struct {
+	head *Timer
+	tail *Timer
+}
+
+func (l *TimerList) PushBack(t *Timer) {
+	t.list = l
+	if l.tail == nil {
+		l.head = t
+		l.tail = t
+		t.prev = nil
+		t.next = nil
+	} else {
+		l.tail.next = t
+		t.prev = l.tail
+		t.next = nil
+		l.tail = t
+	}
+}
+
+func (l *TimerList) Remove(t *Timer) {
+	if t.list != l {
+		return
+	}
+	if t.prev != nil {
+		t.prev.next = t.next
+	} else {
+		l.head = t.next
+	}
+	if t.next != nil {
+		t.next.prev = t.prev
+	} else {
+		l.tail = t.prev
+	}
+	t.next = nil
+	t.prev = nil
+	t.list = nil
 }
 
 type TimerWheel struct {
-	slots     []*list.List
-	current   int
-	slotNum   int
-	tick      time.Duration
-	lock      sync.Mutex
-	scheduler *Scheduler
-	idSeq     atomic.Uint64
-	index     map[TimerID]*Timer
+	slots        []*TimerList
+	current      int
+	slotNum      int
+	tick         time.Duration
+	lock         sync.Mutex
+	scheduler    *Scheduler
+	idSeq        atomic.Uint64
+	index        map[TimerID]*Timer
+	pendingTasks []TimerFunc
 }
 
 func newTimerWheel(slotNum int, tick time.Duration, scheduler *Scheduler) *TimerWheel {
 	tw := &TimerWheel{
-		slots:     make([]*list.List, slotNum),
-		slotNum:   slotNum,
-		tick:      tick,
-		scheduler: scheduler,
-		index:     make(map[TimerID]*Timer),
+		slots:        make([]*TimerList, slotNum),
+		slotNum:      slotNum,
+		tick:         tick,
+		scheduler:    scheduler,
+		index:        make(map[TimerID]*Timer),
+		pendingTasks: make([]TimerFunc, 0, 128),
 	}
 	for i := range slotNum {
-		tw.slots[i] = list.New()
+		tw.slots[i] = &TimerList{}
 	}
 	return tw
 }
@@ -76,7 +123,7 @@ func (t *TimerWheel) addTimer(interval time.Duration, recurring bool, fn TimerFu
 		ticks:     ticks,
 		slot:      slot,
 	}
-	timer.elem = t.slots[slot].PushBack(timer)
+	t.slots[slot].PushBack(timer)
 	t.index[id] = timer
 	return id, nil
 }
@@ -85,10 +132,12 @@ func (t *TimerWheel) cancelTimer(id TimerID) bool {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	timer, ok := t.index[id]
-	if !ok || timer.elem == nil {
+	if !ok {
 		return false
 	}
-	t.slots[timer.slot].Remove(timer.elem)
+	if timer.list != nil {
+		timer.list.Remove(timer)
+	}
 	delete(t.index, id)
 	return true
 }
@@ -96,20 +145,19 @@ func (t *TimerWheel) cancelTimer(id TimerID) bool {
 func (t *TimerWheel) tickerHandler() {
 	t.lock.Lock()
 	slot := t.slots[t.current]
-	for el := slot.Front(); el != nil; {
-		next := el.Next()
-		timer := el.Value.(*Timer)
+	t.pendingTasks = t.pendingTasks[:0]
+
+	for timer := slot.head; timer != nil; {
+		next := timer.next
 		if timer.rounds > 0 {
 			timer.rounds--
-			el = next
+			timer = next
 			continue
 		}
-		if t.scheduler != nil {
-			t.scheduler.PushTask(timer.fn)
-		} else {
-			go timer.fn()
-		}
-		slot.Remove(el)
+
+		t.pendingTasks = append(t.pendingTasks, timer.fn)
+
+		slot.Remove(timer)
 		delete(t.index, timer.id)
 
 		if timer.recurring {
@@ -117,12 +165,17 @@ func (t *TimerWheel) tickerHandler() {
 			timer.ticks = ticks
 			timer.rounds = rounds
 			timer.slot = slotIdx
-			timer.elem = t.slots[slotIdx].PushBack(timer)
+			t.slots[slotIdx].PushBack(timer)
 			t.index[timer.id] = timer
 		}
-
-		el = next
+		timer = next
 	}
 	t.current = (t.current + 1) % t.slotNum
 	t.lock.Unlock()
+
+	if len(t.pendingTasks) > 0 && t.scheduler != nil {
+		for _, fn := range t.pendingTasks {
+			t.scheduler.PushTask(fn)
+		}
+	}
 }

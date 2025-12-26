@@ -84,7 +84,7 @@ func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id 
 	case packet.Heartbeat:
 	case packet.Data:
 		if model.IsLocalHandler(id) {
-			err = s.modelManager.DispatchLocalAsync(sconn, id, bdata)
+			err = s.modelManager.DispatchAsync(sconn, id, bdata)
 		} else {
 			err = remoteCall(sconn, sconn.PackCodec, packet.NewInternal(packet.InternalData, id, sid, bdata), defaultNodeAgent.getGroutes(id))
 		}
@@ -133,7 +133,7 @@ func (s *ServerRequest) onMessage(sconn *NetPollConnection, typ packet.Type, id 
 		if !ok {
 			return fmt.Errorf("[ServerRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, sconn.ID(), sid)
 		}
-		err = s.modelManager.DispatchLocalAsync(conn, id, bdata)
+		err = s.modelManager.DispatchAsync(conn, id, bdata)
 	case packet.ClientData:
 		conn, ok := s.connManager.GetByID(sid)
 		if !ok {

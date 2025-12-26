@@ -1,44 +1,82 @@
 package logx
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"sync"
 )
 
+var _BufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
 func InitLogger() {
-	log.Default().SetOutput(log.Writer())
+	log.SetFlags(log.LstdFlags)
 }
 
-func output(level level, msg string) {
-	_, file, line, _ := runtime.Caller(2)
-	var b strings.Builder
-	b.WriteByte(' ')
+func formatPrefix(b *bytes.Buffer, level level, file string, line int) {
 	b.WriteString(level.String())
 	b.WriteByte(' ')
-	b.WriteString(filepath.Base(file))
+
+	shortFile := file
+	if idx := strings.LastIndexByte(file, '/'); idx >= 0 {
+		shortFile = file[idx+1:]
+	} else if idx := strings.LastIndexByte(file, '\\'); idx >= 0 {
+		shortFile = file[idx+1:]
+	}
+	b.WriteString(shortFile)
 	b.WriteByte(':')
-	b.WriteString(fmt.Sprint(line))
+	b.WriteString(strconv.Itoa(line))
 	b.WriteByte(' ')
-	b.WriteString(msg)
-	log.Println(strings.TrimSpace(b.String()))
+}
+
+func output(level level, v ...any) {
+	b := _BufferPool.Get().(*bytes.Buffer)
+	b.Reset()
+
+	_, file, line, ok := runtime.Caller(2)
+	if !ok {
+		file = "???"
+		line = 0
+	}
+	formatPrefix(b, level, file, line)
+
+	fmt.Fprint(b, v...)
+	log.Output(2, b.String())
+	_BufferPool.Put(b)
+}
+
+func outputf(level level, format string, v ...any) {
+	b := _BufferPool.Get().(*bytes.Buffer)
+	b.Reset()
+
+	_, file, line, ok := runtime.Caller(2)
+	if !ok {
+		file = "???"
+		line = 0
+	}
+	formatPrefix(b, level, file, line)
+
+	fmt.Fprintf(b, format, v...)
+	log.Output(2, b.String())
+	_BufferPool.Put(b)
 }
 
 type LoggerLevel struct{ level level }
 
-func (l LoggerLevel) Print(v ...any)            { output(l.level, fmt.Sprint(v...)) }
-func (l LoggerLevel) Println(v ...any)          { output(l.level, fmt.Sprint(v...)) }
-func (l LoggerLevel) Printf(f string, v ...any) { output(l.level, fmt.Sprintf(f, v...)) }
+func (l LoggerLevel) Print(v ...any)            { output(l.level, v...) }
+func (l LoggerLevel) Println(v ...any)          { output(l.level, v...) }
+func (l LoggerLevel) Printf(f string, v ...any) { outputf(l.level, f, v...) }
 
 type RecoverLevel struct{ level level }
 
 func (r RecoverLevel) Recover(v ...any) {
 	if errr := recover(); errr != nil {
-		msg := fmt.Sprintf("panic[%s] recovered: %v\n%s", v, r, string(debug.Stack()))
+		msg := fmt.Sprintf("panic[%s] recovered: %v\n%s", fmt.Sprint(v...), errr, string(debug.Stack()))
 		output(r.level, msg)
 	}
 }
@@ -46,12 +84,12 @@ func (r RecoverLevel) Recover(v ...any) {
 type FatalLevel struct{ level level }
 
 func (f FatalLevel) Fatal(v ...any) {
-	output(f.level, fmt.Sprint(v...))
+	output(f.level, v...)
 	os.Exit(1)
 }
 
 func (f FatalLevel) Fatalf(format string, v ...any) {
-	output(f.level, fmt.Sprintf(format, v...))
+	outputf(f.level, format, v...)
 	os.Exit(1)
 }
 

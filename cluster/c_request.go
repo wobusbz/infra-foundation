@@ -99,7 +99,7 @@ func (c *ClientRequest) onMessage(typ packet.Type, id int32, sid int64, bdata []
 		if !ok {
 			return fmt.Errorf("[ClientRequest/onMessage] Type[%d] ConnID[%d] SessionID: %d not found", typ, c.ID(), sid)
 		}
-		err = c.modelManager.DispatchLocalAsync(conn, id, bdata)
+		err = c.modelManager.DispatchAsync(conn, id, bdata)
 	case packet.ClientData:
 		conn, ok := c.connManager.GetByID(sid)
 		if !ok {
