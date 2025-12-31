@@ -1,6 +1,6 @@
 module infra-foundation
 
-go 1.25.4
+go 1.26rc1
 
 require (
 	github.com/cloudwego/netpoll v0.7.2

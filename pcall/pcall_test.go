@@ -19,7 +19,7 @@ func (TestObj) Fail(a int) (int, error) {
 
 func TestPcall_Success(t *testing.T) {
 	obj := TestObj{}
-	m, _ := reflect.TypeOf(obj).MethodByName("Add")
+	m, _ := reflect.TypeFor[TestObj]().MethodByName("Add")
 	args := []reflect.Value{reflect.ValueOf(obj), reflect.ValueOf(int(1)), reflect.ValueOf(int(2))}
 	Pcall0(m, args)
 	var arrs = []int{1, 2}

@@ -60,6 +60,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	localAddr = "192.168.110.67"
 
 	discovery.RegisterService(os.Args[1], fmt.Sprintf("%s:%s", localAddr, strings.Split(os.Args[2], ":")[1]), true, model.HandlersRoutes())
 

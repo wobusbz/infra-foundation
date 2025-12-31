@@ -5,17 +5,6 @@ import (
 	"sync"
 )
 
-type Packeter interface {
-	GetDataLen() uint32
-	GetType() Type
-	GetID() uint32
-	GetData() []byte
-	SetType(Type)
-	SetID(uint32)
-	SetData([]byte)
-	SetDataLen(uint32)
-}
-
 type Type byte
 
 const (
@@ -46,8 +35,9 @@ type Packet struct {
 func New(typ Type, id int32, data []byte) *Packet {
 	p := packetPool.Get().(*Packet)
 	p.typ = typ
-	p.length = int32(len(data))
 	p.id = id
+	p.sid = 0
+	p.length = int32(len(data))
 	p.data = data
 	return p
 }
@@ -55,9 +45,9 @@ func New(typ Type, id int32, data []byte) *Packet {
 func NewInternal(typ Type, id int32, sid int64, data []byte) *Packet {
 	p := packetPool.Get().(*Packet)
 	p.typ = typ
-	p.length = int32(len(data))
 	p.id = id
 	p.sid = sid
+	p.length = int32(len(data))
 	p.data = data
 	return p
 }
@@ -83,5 +73,5 @@ func (p *Packet) Type() Type { return p.typ }
 func (p *Packet) Data() []byte { return p.data }
 
 func (p *Packet) String() string {
-	return fmt.Sprintf("Type: %d, ID: %d, Length: %d, Sid: %d, Data: %s", p.typ, p.id, p.length, p.sid, string(p.data))
+	return fmt.Sprintf("Type: %d, ID: %d, Length: %d, Sid: %d, DataLen: %d", p.typ, p.id, p.length, p.sid, len(p.data))
 }

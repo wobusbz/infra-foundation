@@ -15,7 +15,7 @@ import (
 var sendCount uint64
 
 func main() {
-	const connNum = 1000
+	const connNum = 20
 	const msgNum = 10000
 	var connCount atomic.Int64
 

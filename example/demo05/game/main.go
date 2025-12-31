@@ -10,6 +10,7 @@ import (
 	"infra-foundation/model"
 	"infra-foundation/protomessage"
 	"infra-foundation/session"
+	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -22,7 +23,14 @@ func init() {
 }
 
 func C2SLogin(s session.Session, pm protomessage.ProtoMessage) {
-	err := s.Send(&protos.S2CLogin{Name: "Client TO ID " + strconv.Itoa(int(s.ID()))})
+	pb := &protos.S2CLogin{Name: "Client TO ID " + strconv.Itoa(int(s.ID()))}
+	// if err := s.Notify(nil, pb); err != nil {
+	// 	logx.Err.Println(err)
+	// 	return
+	// }
+	if rand.Int()&1 == 0 {
+	}
+	err := s.Send(pb)
 	if err != nil {
 		logx.Err.Println(err)
 	}
@@ -58,6 +66,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	localAddr = "192.168.110.67"
 
 	logx.Dbg.Println(model.HandlersRoutes())
 
