@@ -55,7 +55,7 @@ func main() {
 	go func() {
 		http.ListenAndServe("0.0.0.0:9008", nil)
 	}()
-	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "localhost:2379")
+	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "192.168.110.67:2379")
 	if err != nil {
 		panic(err)
 	}
