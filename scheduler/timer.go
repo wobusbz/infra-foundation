@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"infra-foundation/metrics"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,21 +64,27 @@ func (l *TimerList) Remove(t *Timer) {
 	t.list = nil
 }
 
+type timerSlot struct {
+	list *TimerList
+	mu   sync.Mutex
+}
+
 type TimerWheel struct {
-	slots        []*TimerList
-	current      int
+	slots        []*timerSlot
+	current      atomic.Int64
 	slotNum      int
 	tick         time.Duration
-	lock         sync.Mutex
 	scheduler    *Scheduler
 	idSeq        atomic.Uint64
 	index        map[TimerID]*Timer
+	indexMu      sync.RWMutex
 	pendingTasks []TimerFunc
+	pendingMu    sync.Mutex
 }
 
 func newTimerWheel(slotNum int, tick time.Duration, scheduler *Scheduler) *TimerWheel {
 	tw := &TimerWheel{
-		slots:        make([]*TimerList, slotNum),
+		slots:        make([]*timerSlot, slotNum),
 		slotNum:      slotNum,
 		tick:         tick,
 		scheduler:    scheduler,
@@ -85,7 +92,7 @@ func newTimerWheel(slotNum int, tick time.Duration, scheduler *Scheduler) *Timer
 		pendingTasks: make([]TimerFunc, 0, 128),
 	}
 	for i := range slotNum {
-		tw.slots[i] = &TimerList{}
+		tw.slots[i] = &timerSlot{list: &TimerList{}}
 	}
 	return tw
 }
@@ -100,7 +107,7 @@ func (t *TimerWheel) plan(interval time.Duration) (ticks int, rounds int, slot i
 	}
 	rounds = ticks / t.slotNum
 	slotOffset := ticks % t.slotNum
-	slot = (t.current + slotOffset) % t.slotNum
+	slot = (int(t.current.Load()) + slotOffset) % t.slotNum
 	return
 }
 
@@ -108,11 +115,9 @@ func (t *TimerWheel) addTimer(interval time.Duration, recurring bool, fn TimerFu
 	if fn == nil {
 		return 0, nil
 	}
-	t.lock.Lock()
-	defer t.lock.Unlock()
 
 	id := TimerID(t.idSeq.Add(1))
-	ticks, rounds, slot := t.plan(interval)
+	ticks, rounds, slotIdx := t.plan(interval)
 
 	timer := &Timer{
 		id:        id,
@@ -121,33 +126,60 @@ func (t *TimerWheel) addTimer(interval time.Duration, recurring bool, fn TimerFu
 		recurring: recurring,
 		rounds:    rounds,
 		ticks:     ticks,
-		slot:      slot,
+		slot:      slotIdx,
 	}
-	t.slots[slot].PushBack(timer)
+
+	s := t.slots[slotIdx]
+	s.mu.Lock()
+	s.list.PushBack(timer)
+	s.mu.Unlock()
+
+	t.indexMu.Lock()
 	t.index[id] = timer
+	t.indexMu.Unlock()
+
+	metrics.GaugeOf("scheduler_timer_active").Add(1)
 	return id, nil
 }
 
 func (t *TimerWheel) cancelTimer(id TimerID) bool {
-	t.lock.Lock()
-	defer t.lock.Unlock()
+	t.indexMu.RLock()
 	timer, ok := t.index[id]
+	t.indexMu.RUnlock()
 	if !ok {
 		return false
 	}
+
 	if timer.list != nil {
-		timer.list.Remove(timer)
+		s := t.slots[timer.slot]
+		s.mu.Lock()
+		// double-check after acquiring slot lock
+		if timer.list != nil {
+			timer.list.Remove(timer)
+		}
+		s.mu.Unlock()
 	}
+
+	t.indexMu.Lock()
 	delete(t.index, id)
+	t.indexMu.Unlock()
+	metrics.GaugeOf("scheduler_timer_active").Sub(1)
 	return true
 }
 
 func (t *TimerWheel) tickerHandler() {
-	t.lock.Lock()
-	slot := t.slots[t.current]
-	t.pendingTasks = t.pendingTasks[:0]
+	slotIdx := int(t.current.Load()) % t.slotNum
+	s := t.slots[slotIdx]
 
-	for timer := slot.head; timer != nil; {
+	s.mu.Lock()
+
+	t.pendingMu.Lock()
+	t.pendingTasks = t.pendingTasks[:0]
+	t.pendingMu.Unlock()
+
+	var recurTimers []*Timer
+
+	for timer := s.list.head; timer != nil; {
 		next := timer.next
 		if timer.rounds > 0 {
 			timer.rounds--
@@ -155,26 +187,48 @@ func (t *TimerWheel) tickerHandler() {
 			continue
 		}
 
+		t.pendingMu.Lock()
 		t.pendingTasks = append(t.pendingTasks, timer.fn)
+		t.pendingMu.Unlock()
 
-		slot.Remove(timer)
-		delete(t.index, timer.id)
+		s.list.Remove(timer)
 
 		if timer.recurring {
-			ticks, rounds, slotIdx := t.plan(timer.interval)
-			timer.ticks = ticks
-			timer.rounds = rounds
-			timer.slot = slotIdx
-			t.slots[slotIdx].PushBack(timer)
-			t.index[timer.id] = timer
+			recurTimers = append(recurTimers, timer)
+		} else {
+			t.indexMu.Lock()
+			delete(t.index, timer.id)
+			t.indexMu.Unlock()
 		}
 		timer = next
 	}
-	t.current = (t.current + 1) % t.slotNum
-	t.lock.Unlock()
 
-	if len(t.pendingTasks) > 0 && t.scheduler != nil {
-		for _, fn := range t.pendingTasks {
+	s.mu.Unlock()
+
+	t.current.Store(int64((slotIdx + 1) % t.slotNum))
+
+	for _, timer := range recurTimers {
+		ticks, rounds, newSlotIdx := t.plan(timer.interval)
+		timer.ticks = ticks
+		timer.rounds = rounds
+		timer.slot = newSlotIdx
+
+		ns := t.slots[newSlotIdx]
+		ns.mu.Lock()
+		ns.list.PushBack(timer)
+		ns.mu.Unlock()
+
+		t.indexMu.Lock()
+		t.index[timer.id] = timer
+		t.indexMu.Unlock()
+	}
+
+	t.pendingMu.Lock()
+	batch := t.pendingTasks
+	t.pendingMu.Unlock()
+
+	if len(batch) > 0 && t.scheduler != nil {
+		for _, fn := range batch {
 			t.scheduler.PushTask(fn)
 		}
 	}

@@ -4,7 +4,7 @@
 // 	protoc        v6.32.0
 // source: cluster.proto
 
-package cluster
+package clusterpb
 
 import (
 	reflect "reflect"

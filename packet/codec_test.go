@@ -8,7 +8,7 @@ import (
 )
 
 func TestPackCodec(t *testing.T) {
-	packCodec := NewPackCodec()
+	packCodec := NewCodec()
 	b, err := packCodec.Pack(Heartbeat, 100, 1, []byte("helloworld"))
 	if err != nil {
 		t.Fatal(err)

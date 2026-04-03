@@ -1,277 +1,195 @@
 package cluster
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"infra-foundation/connmannger"
+	"infra-foundation/clusterpb"
+	"infra-foundation/config"
+	"infra-foundation/connmanager"
 	"infra-foundation/logx"
 	"infra-foundation/packet"
 	"infra-foundation/protomessage"
 	"infra-foundation/session"
-	"maps"
-	"math/rand"
-	"strconv"
-	"sync"
-	"sync/atomic"
 )
 
-type node struct {
-	Id       string
-	Name     string
-	Addr     string
-	Frontend bool
-	Routes   []int32
+type Node struct {
+	ctx               ServerContext
+	localNode         *NodeInfo
+	registry          *ServiceRegistry
+	loadBalancer      *LoadBalancer
+	sessionBinder     *SessionBinder
+	nodeConnManager   *connmanager.SessionManager
+	connectionFactory func(addr, id, name string, frontend bool) error
+	connectionPolicy  config.ConnectionPolicy
 }
 
-func (n *node) connection(id, name string) error {
-	conn := NewClientConnection(defaultNodeAgent.svr)
-	if err := conn.DialConnection(n.Addr); err != nil {
-		return err
-	}
-	sid, _ := strconv.Atoi(n.Id)
-	conn.BindID(int64(sid))
-	return conn.SendTypePb(packet.Connection, &N2MOnConnection{ID: id, Name: name, Frontend: n.Frontend})
-}
-
-type NodeAgent struct {
-	svr         Server
-	node        *node
-	nodes       map[string][]*node
-	idNodes     map[string]*node
-	m           sync.RWMutex
-	tryState    atomic.Bool
-	groutes     map[int32]string
-	groutesrw   sync.RWMutex
-	connManager *connmannger.ConnManager
-}
-
-type sender interface {
-	SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error
-	SendData(data []byte) error
-}
-
-var (
-	_                = (*NodeAgent).removeByNameOrAddr
-	_                = (*NodeAgent).getGroutes
-	_                = (*NodeAgent).getNodeByName
-	_                = (*NodeAgent).getGateNode
-	_                = (*NodeAgent).storeNodeConn
-	_                = (*NodeAgent).hasGroutes
-	defaultNodeAgent = newNodeAgent()
-)
-
-func newNodeAgent() *NodeAgent {
-	return &NodeAgent{
-		nodes:       map[string][]*node{},
-		idNodes:     map[string]*node{},
-		groutes:     map[int32]string{},
-		connManager: connmannger.NewConnManager(),
+func newNode() *Node {
+	registry := NewServiceRegistry()
+	nodeConnManager := connmanager.NewSessionManager()
+	sessionBinder := NewSessionBinder(nodeConnManager)
+	return &Node{
+		registry:         registry,
+		loadBalancer:     NewLoadBalancer(registry),
+		sessionBinder:    sessionBinder,
+		nodeConnManager:  nodeConnManager,
+		connectionPolicy: config.Default.ConnectionPolicy,
 	}
 }
 
-func (n *NodeAgent) storeServer(svr Server) {
-	n.svr = svr
+func (n *Node) bindServer(ctx ServerContext) {
+	n.ctx = ctx
 }
 
-func (n *NodeAgent) setNode(name, id, addr string, frontend bool) {
-	n.node = &node{Id: id, Name: name, Addr: addr, Frontend: frontend}
+func (n *Node) SetConnectionFactory(factory func(addr, id, name string, frontend bool) error) {
+	n.connectionFactory = factory
 }
 
-func (n *NodeAgent) getNodeByName(s session.Session, name string) (session.Session, error) {
-	nodeInstances := s.GetServers(name)
-	if nodeInstances == "" {
-		return n.pick(name, s)
+func (n *Node) ServiceRegistry() *ServiceRegistry {
+	return n.registry
+}
+
+func (n *Node) LoadBalancer() *LoadBalancer {
+	return n.loadBalancer
+}
+
+func (n *Node) SessionBinder() *SessionBinder {
+	return n.sessionBinder
+}
+
+func (n *Node) NodeConnManager() *connmanager.SessionManager {
+	return n.nodeConnManager
+}
+
+func (n *Node) LocalNode() *NodeInfo {
+	return n.localNode
+}
+
+func (n *Node) SetLocalNode(name, id, addr string, frontend bool) {
+	n.localNode = &NodeInfo{Id: id, Name: name, Addr: addr, Frontend: frontend}
+	n.sessionBinder.SetLocalNode(n.localNode)
+}
+
+func (n *Node) connectToNode(targetNode *NodeInfo) error {
+	if n.connectionFactory == nil {
+		logx.Dbg.Printf("[Node] connectionFactory not set, skip connecting to %s (passive connection will work)", targetNode.Name)
+		return nil
 	}
-	id, _ := strconv.Atoi(nodeInstances)
-	conn, ok := n.connManager.GetByID(int64(id))
-	if !ok {
-		return nil, fmt.Errorf("NodeName: %s NodeId: %s not found", name, nodeInstances)
+	if n.localNode == nil {
+		return fmt.Errorf("[Node] local node not set")
 	}
-	return conn, nil
+	return n.connectionFactory(targetNode.Addr, n.localNode.Id, n.localNode.Name, targetNode.Frontend)
 }
 
-func (n *NodeAgent) notifyCloseSession(s session.Session) error {
+func (n *Node) nodeBySession(s session.Session, name string) (session.Session, error) {
+	nodeID := s.GetServers(name)
+	if nodeID == "" {
+		return n.selectNode(name, s)
+	}
+	return n.sessionBinder.GetNodeByName(s, name)
+}
+
+func (n *Node) broadcastSessionClose(s session.Session) error {
 	var errs []error
 	for name, ids := range s.Servers() {
-		if n.node.Name == name {
+		if n.localNode != nil && n.localNode.Name == name {
 			continue
 		}
 
-		id, _ := strconv.Atoi(ids)
-		conn, ok := n.connManager.GetByID(int64(id))
+		conn, ok := n.sessionBinder.GetNodeConnection(ids)
 		if !ok {
 			continue
 		}
-		errs = append(errs, conn.(sender).SendTypePb(packet.DisConnection, &N2MOnSessionClose{SessionID: s.ID()}))
+		senderConn, ok := conn.(interface {
+			SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error
+		})
+		if !ok {
+			continue
+		}
+		errs = append(errs, senderConn.SendTypePb(packet.DisConnection, &clusterpb.N2MOnSessionClose{SessionID: s.ID()}))
 	}
 	return errors.Join(errs...)
 }
 
-func (n *NodeAgent) getGateNode(s session.Session) (session.Session, error) {
-	for _, v := range s.Servers() {
-		node, ok := n.idNodes[v]
-		if !ok {
-			continue
-		}
-		if !node.Frontend {
-			continue
-		}
-		id, _ := strconv.Atoi(v)
-		conn, ok := n.connManager.GetByID(int64(id))
-		if !ok {
-			return nil, fmt.Errorf("NodeName: %s NodeId: %s not found", node.Name, node.Id)
-		}
-		return conn, nil
-	}
-	return nil, fmt.Errorf("Session[%d] gate not found", s.ID())
+func (n *Node) gatewayBySession(s session.Session) (session.Session, error) {
+	return n.sessionBinder.GetGateNode(s, n.registry)
 }
 
-func (n *NodeAgent) pick(name string, s session.Session) (session.Session, error) {
-	n.m.RLock()
-	defer n.m.RUnlock()
-	nodes, ok := n.nodes[name]
+func (n *Node) selectNode(name string, s session.Session) (session.Session, error) {
+	node, err := n.loadBalancer.Pick(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = n.sessionBinder.BindSessionToNode(s, node); err != nil {
+		return nil, err
+	}
+
+	conn, ok := n.sessionBinder.GetNodeConnection(node.Id)
 	if !ok {
-		return nil, fmt.Errorf("%s not found", name)
+		return nil, fmt.Errorf("[Node] node %s connection not found", node.Id)
 	}
-	if len(nodes) == 0 {
-		return nil, fmt.Errorf("%s len == 0", name)
-	}
-	node := nodes[rand.Int()%len(n.nodes[name])]
-	id, _ := strconv.Atoi(node.Id)
-	conn, ok := n.connManager.GetByID(int64(id))
-	if !ok {
-		return nil, fmt.Errorf("NodeName: %s NodeId: %s not found", name, node.Id)
-	}
-	s.BindServers(name, node.Id)
-	s.BindServers(defaultNodeAgent.node.Name, defaultNodeAgent.node.Id)
-	pb := &N2MOnSessionBindServer{SessionID: s.ID(), UID: s.UID(), Servers: s.Servers()}
-	return conn, conn.(sender).SendTypePb(packet.BindConnection, pb)
+	return conn, nil
 }
 
-func (n *NodeAgent) addNode(name, id, addr string, frontend bool, rids []int32) {
-	n.m.Lock()
-	node := &node{Id: id, Name: name, Addr: addr, Frontend: frontend, Routes: rids}
-	n.nodes[name] = append(n.nodes[name], node)
-	n.idNodes[id] = node
-	n.m.Unlock()
+func (n *Node) bindNodeConn(id string, conn session.Session) {
+	_ = n.sessionBinder.StoreNodeConnection(id, conn)
 }
 
-func (n *NodeAgent) storeNodeConn(id string, conn session.Session) {
-	iid, _ := strconv.Atoi(id)
-	conn.BindID(int64(iid))
-	conn.BindUID(-1)
-	n.connManager.StoreSession(conn)
+func (n *Node) encodeRegistry(name, id, addr string, frontend bool, rids []int32) (string, error) {
+	n.registry.AddNode(name, id, addr, frontend, rids)
+	return n.registry.Marshal(name)
 }
 
-func (n *NodeAgent) Marshal(name, id, addr string, frontend bool, rids []int32) string {
-	n.addNode(name, id, addr, frontend, rids)
-	rb, _ := json.Marshal(n.list(name))
-	return string(rb)
-}
-
-func (n *NodeAgent) removeByNameOrId(name, id string) {
-	n.m.Lock()
-	defer n.m.Unlock()
-	if _, ok := n.nodes[name]; !ok {
-		return
+func (n *Node) shouldConnectTo(node *NodeInfo) bool {
+	if n.localNode == nil {
+		return false
 	}
-	var newNodes []*node
-	for _, v := range n.nodes[name] {
-		if v.Id == id {
-			continue
-		}
-		newNodes = append(newNodes, v)
+	if node.Id == n.localNode.Id {
+		return false
 	}
-	n.nodes[name] = newNodes
-	if len(n.nodes[name]) == 0 {
-		delete(n.nodes, name)
-	}
-	delete(n.idNodes, id)
-}
-
-func (n *NodeAgent) removeByNameOrAddr(name, addr string) {
-	n.m.Lock()
-	defer n.m.Unlock()
-	if _, ok := n.nodes[name]; !ok {
-		return
-	}
-	var newNodes []*node
-	for _, v := range n.nodes[name] {
-		if v.Id == addr {
-			continue
-		}
-		newNodes = append(newNodes, v)
-	}
-	n.nodes[name] = newNodes
-	if len(n.nodes[name]) == 0 {
-		delete(n.nodes, name)
+	switch n.connectionPolicy {
+	case config.ConnectPolicyNone:
+		return false
+	case config.ConnectPolicyAll:
+		return true
+	case config.ConnectPolicyFrontendToBackend:
+		return n.localNode.Frontend && !node.Frontend
+	case config.ConnectPolicyBackendToFrontend:
+		return !n.localNode.Frontend && node.Frontend
+	default:
+		return true
 	}
 }
 
-func (n *NodeAgent) mapList() map[string][]*node {
-	n.m.RLock()
-	defer n.m.RUnlock()
-	nodesCopy := make(map[string][]*node, len(n.nodes))
-	for k, v := range n.nodes {
-		nodesCopy[k] = append([]*node{}, v...)
+func (n *Node) decodeRegistry(name string, sb []byte) error {
+	existing := make(map[string]struct{})
+	for _, node := range n.registry.GetNodes(name) {
+		existing[node.Id] = struct{}{}
 	}
-	return nodesCopy
-}
 
-func (n *NodeAgent) list(name string) []*node {
-	n.m.RLock()
-	defer n.m.RUnlock()
-	return n.nodes[name]
-}
-
-func (n *NodeAgent) Unmarshal(k string, sb []byte) error {
-	var v = make(map[string]*node, len(n.nodes))
-	for _, vv := range n.list(k) {
-		v[vv.Id] = vv
-	}
-	var vns []*node
-	if err := json.Unmarshal(sb, &vns); err != nil {
+	nodes, err := n.registry.Unmarshal(name, sb)
+	if err != nil {
 		return err
 	}
-	var mns = make(map[string]*node, len(vns))
-	for _, vv := range vns {
-		mns[vv.Id] = vv
-		n.groutesrw.Lock()
-		for _, id := range vv.Routes {
-			n.groutes[id] = vv.Name
-		}
-		n.groutesrw.Unlock()
-		if _, ok := v[vv.Id]; ok {
+
+	for _, node := range nodes {
+		if _, ok := existing[node.Id]; ok {
 			continue
 		}
-		if vv.Id == n.node.Id {
+		if !n.shouldConnectTo(node) {
 			continue
 		}
-		if n.node.Id > vv.Id {
-			continue
-		}
-		if err := vv.connection(n.node.Id, n.node.Name); err != nil {
+		if err := n.connectToNode(node); err != nil {
 			return err
 		}
 	}
-	n.m.Lock()
-	n.nodes[k] = vns
-	maps.Copy(n.idNodes, mns)
-	logx.Dbg.Println(k, string(sb), n.idNodes)
-	n.m.Unlock()
 	return nil
 }
 
-func (n *NodeAgent) getGroutes(id int32) string {
-	n.groutesrw.RLock()
-	defer n.groutesrw.RUnlock()
-	return n.groutes[id]
+func (n *Node) serviceByRoute(id int32) string {
+	return n.registry.GetServiceByRoute(id)
 }
 
-func (n *NodeAgent) hasGroutes(id int32) bool {
-	n.groutesrw.RLock()
-	defer n.groutesrw.RUnlock()
-	_, ok := n.groutes[id]
-	return ok
+func (n *Node) hasRoute(id int32) bool {
+	return n.registry.HasRoute(id)
 }

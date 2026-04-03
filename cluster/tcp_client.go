@@ -3,14 +3,15 @@ package cluster
 import (
 	"context"
 	"errors"
-	"fmt"
+	"infra-foundation/config"
 	"infra-foundation/logx"
 	"infra-foundation/packet"
 	"infra-foundation/protomessage"
 	"infra-foundation/scheduler"
+	"infra-foundation/session"
+	"infra-foundation/transport"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -18,45 +19,60 @@ import (
 
 type handler func(*TCPClient, protomessage.ProtoMessage)
 
+// TCPClient 是基于标准 net.Conn 的客户端实现。
 type TCPClient struct {
-	conn              net.Conn
-	codec             *packet.PackCodec
-	handlers          map[int32]handler
-	msgs              map[int32]protomessage.ProtoMessage
-	handlersrw        sync.RWMutex
-	closed            atomic.Bool
-	writeC            chan []byte
-	timerID           scheduler.TimerID
-	scheduler         *scheduler.Scheduler
-	heartbeatTime     time.Duration
-	lastHeartbeatTime atomic.Int64
-	wg                sync.WaitGroup
-	ctx               context.Context
-	cancel            context.CancelFunc
+	*session.Base
+	Conn          *transport.Conn
+	conn          net.Conn
+	handlers      map[int32]handler
+	msgs          map[int32]protomessage.ProtoMessage
+	handlersrw    sync.RWMutex
+	timerID       scheduler.TimerID
+	scheduler     *scheduler.Scheduler
+	heartbeatTime time.Duration
+	wg            sync.WaitGroup
+	ctx           context.Context
+	cancel        context.CancelFunc
+}
+
+type tcpClientMessenger struct {
+	t *TCPClient
+}
+
+func (m *tcpClientMessenger) Send(pb protomessage.ProtoMessage) error {
+	if m.t.Conn.IsClosed() {
+		return errors.New("[TCPClient/Send] connection closed")
+	}
+	return m.t.Conn.SendTypePb(packet.Data, pb)
+}
+
+func (m *tcpClientMessenger) Notify(targets []session.Session, pb protomessage.ProtoMessage) error {
+	var errs []error
+	for _, sv := range targets {
+		errs = append(errs, sv.Send(pb))
+	}
+	return errors.Join(errs...)
+}
+
+func (m *tcpClientMessenger) Close() error {
+	m.t.cancel()
+	m.t.scheduler.CancelTimer(m.t.timerID)
+	err := m.t.Conn.Close()
+	m.t.wg.Wait()
+	m.t.scheduler.Stop()
+	return err
 }
 
 func NewTCPClient() *TCPClient {
 	t := &TCPClient{
-		codec:         packet.NewPackCodec(),
 		handlers:      map[int32]handler{},
 		msgs:          map[int32]protomessage.ProtoMessage{},
-		writeC:        make(chan []byte, 1<<8),
 		scheduler:     scheduler.NewScheduler(),
-		heartbeatTime: time.Second * 3,
+		heartbeatTime: config.Default.TCPClientHeartbeatInterval,
 	}
 	t.ctx, t.cancel = context.WithCancel(context.TODO())
 	return t
 }
-
-func (t *TCPClient) SetClosed() bool { return t.closed.CompareAndSwap(false, true) }
-
-func (t *TCPClient) IsClosed() bool { return t.closed.Load() }
-
-func (t *TCPClient) HeartbeatAt() int64 { return t.lastHeartbeatTime.Load() }
-
-func (t *TCPClient) SetHeartbeatAt(now int64) { t.lastHeartbeatTime.Store(now) }
-
-func (t *TCPClient) RefreshHeartbeat() { t.SetHeartbeatAt(time.Now().Unix()) }
 
 func (t *TCPClient) RegisterHandler(pb protomessage.ProtoMessage, handl handler) {
 	t.handlersrw.Lock()
@@ -71,66 +87,61 @@ func (t *TCPClient) DialConnection(addr string) error {
 	if err != nil {
 		return err
 	}
+	t.Conn = transport.NewConn(t.conn, 1, -1)
+	t.Base = &session.Base{
+		SessionEntity: session.NewSessionEntity(1, -1),
+		Messenger:     &tcpClientMessenger{t: t},
+	}
 	t.timerID, _ = t.scheduler.PushEvery(t.heartbeatTime, t.sendHeartbeat)
-	t.wg.Go(t.writeLoop)
+	t.wg.Add(1)
 	t.wg.Go(t.readerLoop)
 	return err
 }
 
 func (t *TCPClient) Send(pb protomessage.ProtoMessage) error {
-	if t.IsClosed() {
+	if t.Conn.IsClosed() {
 		return errors.New("[TCPClient/Send] connection closed")
 	}
-	return t.SendTypePb(packet.Data, pb)
+	return t.Conn.SendTypePb(packet.Data, pb)
 }
 
 func (t *TCPClient) SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error {
-	if t.IsClosed() {
+	if t.Conn.IsClosed() {
 		return errors.New("[TCPClient/SendTypePb] connection closed")
 	}
-	pbdata, err := proto.Marshal(pb)
-	if err != nil {
-		return fmt.Errorf("[TCPClient/SendTypePb] Marshal %w", err)
-	}
-	return t.SendPack(packet.New(typ, pb.MessageID(), pbdata))
+	return t.Conn.SendTypePb(typ, pb)
 }
 
 func (t *TCPClient) SendData(data []byte) error {
-	if t.IsClosed() {
+	if t.Conn.IsClosed() {
 		return errors.New("[TCPClient/SendData] connection closed")
 	}
-	ctx, cancel := context.WithTimeout(t.ctx, time.Second)
-	defer cancel()
-	select {
-	case t.writeC <- data:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return nil
+	return t.Conn.SendData(data)
 }
 
 func (t *TCPClient) SendPack(pack *packet.Packet) error {
-	if t.IsClosed() {
+	if t.Conn.IsClosed() {
 		pack.Free()
 		return errors.New("[TCPClient/SendPack] connection closed")
 	}
-	bdata, err := t.codec.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
-	pack.Free()
-	if err != nil {
-		return fmt.Errorf("[TCPClient/Send] Pack %w", err)
-	}
-	return t.SendData(bdata)
+	return t.Conn.SendPack(pack)
 }
 
 func (t *TCPClient) readerLoop() {
-	var bdata = make([]byte, 2048)
+	defer t.wg.Done()
+	var buf = make([]byte, 2048)
 	for {
-		n, err := t.conn.Read(bdata)
+		select {
+		case <-t.ctx.Done():
+			return
+		default:
+		}
+		n, err := t.conn.Read(buf)
 		if err != nil {
 			logx.Err.Println(err)
 			return
 		}
-		pks, err := t.codec.Unpack(bdata[:n])
+		pks, err := t.Conn.Codec.Unpack(buf[:n])
 		if err != nil {
 			logx.Dbg.Println(err)
 			return
@@ -157,51 +168,25 @@ func (t *TCPClient) readerLoop() {
 			}
 			pk.Free()
 		}
-		t.RefreshHeartbeat()
+		t.Conn.RefreshHeartbeat()
 	}
 }
 
 func (t *TCPClient) Close() error {
-	if !t.SetClosed() {
+	if !t.Conn.SetClosed() {
 		return nil
 	}
-	t.cancel()
-	t.wg.Wait()
-	close(t.writeC)
-	t.scheduler.CancelTimer(t.timerID)
-	t.scheduler.Stop()
-	return t.conn.Close()
+	return t.Messenger.Close()
 }
 
 func (t *TCPClient) sendHeartbeat() {
 	now := time.Now().Unix()
-	if t.HeartbeatAt()+int64(t.heartbeatTime.Seconds()) > now {
+	if t.Conn.HeartbeatAt()+int64(t.heartbeatTime.Seconds()) > now {
 		return
 	}
-	if err := t.SendPack(packet.New(packet.Heartbeat, 0, nil)); err != nil {
-		t.Close()
+	if err := t.Conn.SendPack(packet.New(packet.Heartbeat, 0, nil)); err != nil {
+		t.Conn.Close()
 		return
 	}
-	t.SetHeartbeatAt(now)
-}
-
-func (t *TCPClient) writeLoop() {
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		case bdata, ok := <-t.writeC:
-			if !ok {
-				return
-			}
-			for off := 0; off < len(bdata); {
-				n, err := t.conn.Write(bdata[off:])
-				if err != nil {
-					logx.Err.Printf("[TCPClient/writeLoop] write error: %v", err)
-					return
-				}
-				off += n
-			}
-		}
-	}
+	t.Conn.SetHeartbeatAt(now)
 }

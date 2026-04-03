@@ -1,10 +1,14 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"infra-foundation/logx"
+	"infra-foundation/metrics"
 	protomessage "infra-foundation/protomessage"
 	"infra-foundation/session"
+	"net/http"
 	"sync"
 
 	"google.golang.org/protobuf/proto"
@@ -12,12 +16,12 @@ import (
 
 type ModelManager struct {
 	mu    sync.RWMutex
-	modes map[string]*model
+	modes map[string]*modelActor
 	order []string
 }
 
 func NewModelManager() *ModelManager {
-	return &ModelManager{modes: map[string]*model{}}
+	return &ModelManager{modes: map[string]*modelActor{}}
 }
 
 var DefaultModelManager = NewModelManager()
@@ -41,7 +45,7 @@ func (m *ModelManager) Register(model Model) error {
 	if _, exists := m.modes[name]; exists {
 		return fmt.Errorf("model.Manager.Register: duplicated model name %q", name)
 	}
-	m.modes[name] = newModel(model)
+	m.modes[name] = newModelActor(model)
 
 	m.order = append(m.order, name)
 	return nil
@@ -72,7 +76,7 @@ func (m *ModelManager) OnDisconnection(session session.Session) {
 	m.mu.RUnlock()
 }
 
-func (m *ModelManager) GetModel(name string) (*model, bool) {
+func (m *ModelManager) GetModel(name string) (*modelActor, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	w, ok := m.modes[name]
@@ -97,14 +101,12 @@ func (m *ModelManager) Unregister(name string) error {
 	return nil
 }
 
-func (m *ModelManager) DispatchAsync(session session.Session, id int32, msg []byte) error {
-	value, ok := Handlers.Load(id)
+func (m *ModelManager) Dispatch(sess session.Session, id int32, msg []byte) error {
+	handlersMu.RLock()
+	hand, ok := handlers[id]
+	handlersMu.RUnlock()
 	if !ok {
-		return fmt.Errorf("[ModelManager/DispatchLocalAsync] %d handlers not found", id)
-	}
-	hand, ok := value.(*handler)
-	if !ok {
-		return errors.New("[ModelManager/DispatchLocalAsync] reflect *handler failed")
+		return fmt.Errorf("[ModelManager/Dispatch] %d handlers not found", id)
 	}
 
 	md := hand.model
@@ -112,7 +114,7 @@ func (m *ModelManager) DispatchAsync(session session.Session, id int32, msg []by
 		var ok bool
 		md, ok = m.GetModel(hand.name)
 		if !ok {
-			return fmt.Errorf("[ModelManager/DispatchLocalAsync] %s Model not found", hand.name)
+			return fmt.Errorf("[ModelManager/Dispatch] %s Model not found", hand.name)
 		}
 		hand.model = md
 	}
@@ -122,13 +124,42 @@ func (m *ModelManager) DispatchAsync(session session.Session, id int32, msg []by
 		pb = hand.pbPool.Get().(protomessage.ProtoMessage)
 		if err := proto.Unmarshal(msg, pb); err != nil {
 			hand.Put(pb)
-			return fmt.Errorf("[ModelManager/DispatchLocalAsync] %d protomessage Unmarshal failed %w", id, err)
+			return fmt.Errorf("[ModelManager/Dispatch] %d protomessage Unmarshal failed %w", id, err)
 		}
 	}
 
-	md.PostFunc(func() {
-		hand.handle(session, pb)
+	md.Post(func() {
+		ctx := &session.Context{
+			Context: context.Background(),
+			Session: sess,
+			MsgID:   id,
+		}
+		hand.handle(ctx, pb)
 		hand.Put(pb)
+		metrics.CounterOf("model_dispatch_total").Inc()
 	})
 	return nil
+}
+
+func (m *ModelManager) DispatchHTTP(mname string, w http.ResponseWriter, r *http.Request) {
+	md, ok := m.GetModel(mname)
+	if !ok {
+		logx.Err.Println(fmt.Errorf("[ModelManager/DispatchHTTP] %s Model not found", mname))
+		http.NotFound(w, r)
+		return
+	}
+	cb, ok := httpHandlers.Load(r.URL.Path)
+	if !ok {
+		logx.Err.Println(fmt.Errorf("[ModelManager/DispatchHTTP] %s Http Handler not found", r.URL.Path))
+		http.NotFound(w, r)
+		return
+	}
+	recorder := NewResponseRecorder()
+	done := make(chan struct{})
+	md.Post(func() {
+		cb.(httpHandlr)(recorder, r)
+		close(done)
+	})
+	<-done
+	recorder.WriteTo(w)
 }

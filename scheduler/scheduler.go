@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"infra-foundation/config"
 	"infra-foundation/logx"
 	"runtime/debug"
 	"sync"
@@ -26,8 +27,17 @@ const (
 	defaultSlotNum = 1024
 )
 
+func init() {
+	if config.Default.SchedulerTick <= 0 {
+		config.Default.SchedulerTick = defaultTick
+	}
+	if config.Default.SchedulerSlotNum <= 0 {
+		config.Default.SchedulerSlotNum = defaultSlotNum
+	}
+}
+
 func NewScheduler() *Scheduler {
-	return NewSchedulerWith(defaultSlotNum, defaultTick)
+	return NewSchedulerWith(config.Default.SchedulerSlotNum, config.Default.SchedulerTick)
 }
 
 func NewSchedulerWith(slotNum int, tick time.Duration) *Scheduler {
@@ -40,7 +50,7 @@ func NewSchedulerWith(slotNum int, tick time.Duration) *Scheduler {
 
 	s := &Scheduler{
 		chDie:   make(chan struct{}),
-		tasks:   make([]TimerFunc, 0, 4096),
+		tasks:   make([]TimerFunc, 0, config.Default.SchedulerTaskCap),
 		tick:    tick,
 		slotNum: slotNum,
 	}
@@ -96,17 +106,14 @@ func (s *Scheduler) runExecutor() {
 			s.taskCond.Wait()
 		}
 
-		fn := s.tasks[0]
-
-		s.tasks = s.tasks[1:]
-
-		if len(s.tasks) == 0 {
-			s.tasks = s.tasks[:0]
-		}
+		batch := s.tasks
+		s.tasks = s.tasks[:0]
 
 		s.taskLock.Unlock()
 
-		try(fn)
+		for _, fn := range batch {
+			try(fn)
+		}
 
 		s.taskLock.Lock()
 	}
@@ -137,7 +144,7 @@ func (s *Scheduler) PushEvery(interval time.Duration, fn TimerFunc) (TimerID, er
 	return s.timeWheel.addTimer(interval, true, fn)
 }
 
-func (s *Scheduler) PushInfiniteTimer(interval time.Duration, infinite bool, fn TimerFunc) TimerID {
+func (s *Scheduler) ScheduleTimer(interval time.Duration, infinite bool, fn TimerFunc) TimerID {
 	var id TimerID
 	if infinite {
 		id, _ = s.PushEvery(interval, fn)

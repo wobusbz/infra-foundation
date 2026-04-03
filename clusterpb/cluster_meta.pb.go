@@ -1,4 +1,4 @@
-package cluster
+package clusterpb
 
 func (x *N2MSend) MessageID() int32                   { return 1 }
 func (x *N2MSend) MessageName() string                { return "N2MSend" }
