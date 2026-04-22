@@ -5,23 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"infra-foundation/logx"
-	"infra-foundation/metrics"
-	protomessage "infra-foundation/protomessage"
+	"infra-foundation/message"
+	"infra-foundation/metric"
 	"infra-foundation/session"
 	"net/http"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 )
 
 type ModelManager struct {
-	mu    sync.RWMutex
-	modes map[string]*modelActor
-	order []string
+	mu         sync.RWMutex
+	modes      map[string]*modelActor
+	order      []string
+	handlersMu sync.RWMutex
+	handlers   map[int32]*protoHandler
 }
 
 func NewModelManager() *ModelManager {
-	return &ModelManager{modes: map[string]*modelActor{}}
+	return &ModelManager{
+		modes:    map[string]*modelActor{},
+		handlers: map[int32]*protoHandler{},
+	}
 }
 
 var DefaultModelManager = NewModelManager()
@@ -101,42 +107,53 @@ func (m *ModelManager) Unregister(name string) error {
 	return nil
 }
 
+func (m *ModelManager) RegisterHandler(id int32, name string, newProto func() message.Message, handle func(*session.Context, message.Message)) {
+	m.handlersMu.Lock()
+	defer m.handlersMu.Unlock()
+	m.handlers[id] = &protoHandler{name: name, newProto: newProto, handle: handle}
+}
+
+func (m *ModelManager) IsLocalHandler(id int32) bool {
+	m.handlersMu.RLock()
+	defer m.handlersMu.RUnlock()
+	_, ok := m.handlers[id]
+	return ok
+}
+
+func (m *ModelManager) GetLocalHandlerIDs() []int32 {
+	m.handlersMu.RLock()
+	defer m.handlersMu.RUnlock()
+	ids := make([]int32, 0, len(m.handlers))
+	for id := range m.handlers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (m *ModelManager) Dispatch(sess session.Session, id int32, msg []byte) error {
-	handlersMu.RLock()
-	hand, ok := handlers[id]
-	handlersMu.RUnlock()
+	m.handlersMu.RLock()
+	hand, ok := m.handlers[id]
+	m.handlersMu.RUnlock()
 	if !ok {
-		return fmt.Errorf("[ModelManager/Dispatch] %d handlers not found", id)
+		return fmt.Errorf("handlers for %d not found", id)
 	}
 
-	md := hand.model
-	if md == nil {
-		var ok bool
-		md, ok = m.GetModel(hand.name)
-		if !ok {
-			return fmt.Errorf("[ModelManager/Dispatch] %s Model not found", hand.name)
-		}
-		hand.model = md
+	md, ok := m.GetModel(hand.name)
+	if !ok {
+		return fmt.Errorf("model %s not found", hand.name)
 	}
 
-	var pb protomessage.ProtoMessage
+	pb := hand.newProto()
 	if len(msg) > 0 {
-		pb = hand.pbPool.Get().(protomessage.ProtoMessage)
 		if err := proto.Unmarshal(msg, pb); err != nil {
-			hand.Put(pb)
-			return fmt.Errorf("[ModelManager/Dispatch] %d protomessage Unmarshal failed %w", id, err)
+			return fmt.Errorf("unmarshal message %d: %w", id, err)
 		}
 	}
 
 	md.Post(func() {
-		ctx := &session.Context{
-			Context: context.Background(),
-			Session: sess,
-			MsgID:   id,
-		}
+		ctx := &session.Context{Context: context.Background(), Session: sess, MsgID: id}
 		hand.handle(ctx, pb)
-		hand.Put(pb)
-		metrics.CounterOf("model_dispatch_total").Inc()
+		metric.CounterOf("model_dispatch_total").Inc()
 	})
 	return nil
 }
@@ -144,22 +161,27 @@ func (m *ModelManager) Dispatch(sess session.Session, id int32, msg []byte) erro
 func (m *ModelManager) DispatchHTTP(mname string, w http.ResponseWriter, r *http.Request) {
 	md, ok := m.GetModel(mname)
 	if !ok {
-		logx.Err.Println(fmt.Errorf("[ModelManager/DispatchHTTP] %s Model not found", mname))
+		logx.Err.Printf("model %s not found", mname)
 		http.NotFound(w, r)
 		return
 	}
 	cb, ok := httpHandlers.Load(r.URL.Path)
 	if !ok {
-		logx.Err.Println(fmt.Errorf("[ModelManager/DispatchHTTP] %s Http Handler not found", r.URL.Path))
+		logx.Err.Printf("http handler %s not found", r.URL.Path)
 		http.NotFound(w, r)
 		return
 	}
 	recorder := NewResponseRecorder()
 	done := make(chan struct{})
 	md.Post(func() {
-		cb.(httpHandlr)(recorder, r)
+		cb.(httpHandler)(recorder, r)
 		close(done)
 	})
-	<-done
-	recorder.WriteTo(w)
+	select {
+	case <-done:
+		recorder.WriteTo(w)
+	case <-time.After(30 * time.Second):
+		logx.Err.Printf("[ModelManager/DispatchHTTP] timeout waiting for model %s", mname)
+		http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+	}
 }

@@ -4,3 +4,12 @@ test01
 
 example/
 example_*.go
+
+docs/
+
+*.exe
+
+game
+gate
+logs
+client

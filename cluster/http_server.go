@@ -2,20 +2,20 @@ package cluster
 
 import (
 	"context"
-	"infra-foundation/metrics"
+	"infra-foundation/metric"
 	"infra-foundation/model"
 	"net/http"
 	"strings"
 )
 
 type HTTPServer struct {
-	httpServer     *http.Server
+	httpServer   *http.Server
 	modelManager *model.ModelManager
 }
 
 func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/debug/metrics" {
-		metrics.ServeHTTP(w, r)
+		metric.ServeHTTP(w, r)
 		return
 	}
 	paths := strings.Split(r.URL.Path, "/")

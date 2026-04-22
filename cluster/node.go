@@ -5,169 +5,214 @@ import (
 	"fmt"
 	"infra-foundation/clusterpb"
 	"infra-foundation/config"
-	"infra-foundation/connmanager"
+
 	"infra-foundation/logx"
-	"infra-foundation/packet"
-	"infra-foundation/protomessage"
+	"infra-foundation/model"
+	"infra-foundation/protocol"
+	"infra-foundation/queue"
+	"infra-foundation/scheduler"
 	"infra-foundation/session"
 )
 
-type Node struct {
-	ctx               ServerContext
+type Router interface {
+	RemoteCallWithAgent(s session.Session, p *protocol.Codec, pack *protocol.Pkt, nodeName string) error
+	GatewayBySession(s session.Session) (session.Session, error)
+}
+
+var _ Router = (*Node)(nil)
+
+type MessageRouter struct {
+	registry      *ServiceRegistry
+	loadBalancer  *LoadBalancer
+	sessionBinder *SessionBinder
+}
+
+type PeerManager struct {
 	localNode         *NodeInfo
-	registry          *ServiceRegistry
-	loadBalancer      *LoadBalancer
-	sessionBinder     *SessionBinder
-	nodeConnManager   *connmanager.SessionManager
+	peerMgr           *session.Manager
 	connectionFactory func(addr, id, name string, frontend bool) error
 	connectionPolicy  config.ConnectionPolicy
 }
 
-func newNode() *Node {
+type Node struct {
+	router *MessageRouter
+	peer   *PeerManager
+
+	connMgr      *session.Manager
+	modelManager *model.ModelManager
+	scheduler    *scheduler.Scheduler
+	msgQueue     *queue.TaskQueue
+}
+
+func newNode(connMgr *session.Manager, modelManager *model.ModelManager, scheduler *scheduler.Scheduler, msgQueue *queue.TaskQueue) *Node {
 	registry := NewServiceRegistry()
-	nodeConnManager := connmanager.NewSessionManager()
-	sessionBinder := NewSessionBinder(nodeConnManager)
-	return &Node{
-		registry:         registry,
-		loadBalancer:     NewLoadBalancer(registry),
-		sessionBinder:    sessionBinder,
-		nodeConnManager:  nodeConnManager,
+	peerMgr := session.NewManager()
+	sessionBinder := NewSessionBinder(peerMgr)
+
+	router := &MessageRouter{
+		registry:      registry,
+		loadBalancer:  NewLoadBalancer(registry),
+		sessionBinder: sessionBinder,
+	}
+
+	peer := &PeerManager{
+		peerMgr:          peerMgr,
 		connectionPolicy: config.Default.ConnectionPolicy,
+	}
+
+	return &Node{
+		router:       router,
+		peer:         peer,
+		connMgr:      connMgr,
+		modelManager: modelManager,
+		scheduler:    scheduler,
+		msgQueue:     msgQueue,
 	}
 }
 
-func (n *Node) bindServer(ctx ServerContext) {
-	n.ctx = ctx
+func (n *Node) GetConnMgr() *session.Manager {
+	return n.connMgr
+}
+
+func (n *Node) GetModelManager() *model.ModelManager {
+	return n.modelManager
+}
+
+func (n *Node) GetScheduler() *scheduler.Scheduler {
+	return n.scheduler
+}
+
+func (n *Node) GetMsgQueue() *queue.TaskQueue {
+	return n.msgQueue
 }
 
 func (n *Node) SetConnectionFactory(factory func(addr, id, name string, frontend bool) error) {
-	n.connectionFactory = factory
+	n.peer.connectionFactory = factory
 }
 
 func (n *Node) ServiceRegistry() *ServiceRegistry {
-	return n.registry
+	return n.router.registry
 }
 
 func (n *Node) LoadBalancer() *LoadBalancer {
-	return n.loadBalancer
+	return n.router.loadBalancer
 }
 
 func (n *Node) SessionBinder() *SessionBinder {
-	return n.sessionBinder
+	return n.router.sessionBinder
 }
 
-func (n *Node) NodeConnManager() *connmanager.SessionManager {
-	return n.nodeConnManager
+func (n *Node) PeerMgr() *session.Manager {
+	return n.peer.peerMgr
 }
 
 func (n *Node) LocalNode() *NodeInfo {
-	return n.localNode
+	return n.peer.localNode
 }
 
-func (n *Node) SetLocalNode(name, id, addr string, frontend bool) {
-	n.localNode = &NodeInfo{Id: id, Name: name, Addr: addr, Frontend: frontend}
-	n.sessionBinder.SetLocalNode(n.localNode)
+func (n *Node) SetLocalNode(name, id, addr string, frontend bool, rids []int32) {
+	node := &NodeInfo{Id: id, Name: name, Addr: addr, Frontend: frontend, Routes: rids}
+	n.peer.localNode = node
+	n.router.sessionBinder.SetLocalNode(node)
 }
 
-func (n *Node) connectToNode(targetNode *NodeInfo) error {
-	if n.connectionFactory == nil {
-		logx.Dbg.Printf("[Node] connectionFactory not set, skip connecting to %s (passive connection will work)", targetNode.Name)
+func (pm *PeerManager) connectToNode(targetNode *NodeInfo) error {
+	if pm.connectionFactory == nil {
+		logx.Dbg.Printf("[PeerManager] connectionFactory not set, skip connecting to %s (passive connection will work)", targetNode.Name)
 		return nil
 	}
-	if n.localNode == nil {
-		return fmt.Errorf("[Node] local node not set")
+	if pm.localNode == nil {
+		return fmt.Errorf("local node not set")
 	}
-	return n.connectionFactory(targetNode.Addr, n.localNode.Id, n.localNode.Name, targetNode.Frontend)
+	return pm.connectionFactory(targetNode.Addr, pm.localNode.Id, pm.localNode.Name, targetNode.Frontend)
 }
 
-func (n *Node) nodeBySession(s session.Session, name string) (session.Session, error) {
+func (mr *MessageRouter) nodeBySession(s session.Session, name string) (session.Session, error) {
 	nodeID := s.GetServers(name)
 	if nodeID == "" {
-		return n.selectNode(name, s)
+		return mr.selectNode(name, s)
 	}
-	return n.sessionBinder.GetNodeByName(s, name)
+	return mr.sessionBinder.GetNodeByName(s, name)
 }
 
-func (n *Node) broadcastSessionClose(s session.Session) error {
+func (mr *MessageRouter) broadcastSessionClose(s session.Session) error {
 	var errs []error
-	for name, ids := range s.Servers() {
-		if n.localNode != nil && n.localNode.Name == name {
-			continue
+	s.RangeServers(func(name, nodeID string) bool {
+		if mr.sessionBinder.localNode != nil && mr.sessionBinder.localNode.Name == name {
+			return true
 		}
-
-		conn, ok := n.sessionBinder.GetNodeConnection(ids)
+		conn, ok := mr.sessionBinder.GetNodeConnection(nodeID)
 		if !ok {
-			continue
+			return true
 		}
-		senderConn, ok := conn.(interface {
-			SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error
-		})
-		if !ok {
-			continue
-		}
-		errs = append(errs, senderConn.SendTypePb(packet.DisConnection, &clusterpb.N2MOnSessionClose{SessionID: s.ID()}))
-	}
+		errs = append(errs, conn.SendTypePb(int8(protocol.Disconnect), &clusterpb.N2MOnSessionClose{SessionID: string(s.ID())}))
+		return true
+	})
 	return errors.Join(errs...)
 }
 
-func (n *Node) gatewayBySession(s session.Session) (session.Session, error) {
-	return n.sessionBinder.GetGateNode(s, n.registry)
+func (n *Node) GatewayBySession(s session.Session) (session.Session, error) {
+	return n.router.sessionBinder.GetFrontendNode(s, n.router.registry)
 }
 
-func (n *Node) selectNode(name string, s session.Session) (session.Session, error) {
-	node, err := n.loadBalancer.Pick(name)
+func (mr *MessageRouter) selectNode(name string, s session.Session) (session.Session, error) {
+	node, err := mr.loadBalancer.Pick(name)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = n.sessionBinder.BindSessionToNode(s, node); err != nil {
+	if err = mr.sessionBinder.BindSessionToNode(s, node); err != nil {
 		return nil, err
 	}
 
-	conn, ok := n.sessionBinder.GetNodeConnection(node.Id)
+	conn, ok := mr.sessionBinder.GetNodeConnection(node.Id)
 	if !ok {
-		return nil, fmt.Errorf("[Node] node %s connection not found", node.Id)
+		return nil, fmt.Errorf("node %s connection not found", node.Id)
 	}
 	return conn, nil
 }
 
-func (n *Node) bindNodeConn(id string, conn session.Session) {
-	_ = n.sessionBinder.StoreNodeConnection(id, conn)
+func (mr *MessageRouter) bindNodeConn(id string, conn session.Session) {
+	_ = mr.sessionBinder.StoreNodeConnection(id, conn)
 }
 
-func (n *Node) encodeRegistry(name, id, addr string, frontend bool, rids []int32) (string, error) {
-	n.registry.AddNode(name, id, addr, frontend, rids)
-	return n.registry.Marshal(name)
-}
-
-func (n *Node) shouldConnectTo(node *NodeInfo) bool {
-	if n.localNode == nil {
+func (pm *PeerManager) shouldConnectTo(node *NodeInfo) bool {
+	if pm.localNode == nil {
+		logx.Dbg.Printf("[PeerManager] shouldConnectTo: localNode is nil, skip")
 		return false
 	}
-	if node.Id == n.localNode.Id {
+	if node.Id == pm.localNode.Id {
+		logx.Dbg.Printf("[PeerManager] shouldConnectTo: same ID %s, skip", node.Id)
 		return false
 	}
-	switch n.connectionPolicy {
+	switch pm.connectionPolicy {
 	case config.ConnectPolicyNone:
 		return false
 	case config.ConnectPolicyAll:
 		return true
 	case config.ConnectPolicyFrontendToBackend:
-		return n.localNode.Frontend && !node.Frontend
+		return pm.localNode.Frontend && !node.Frontend
 	case config.ConnectPolicyBackendToFrontend:
-		return !n.localNode.Frontend && node.Frontend
+		return !pm.localNode.Frontend && node.Frontend
+	case config.ConnectPolicyByServicePriority:
+		if pm.localNode.Name == node.Name {
+			return false
+		}
+		result := config.ShouldConnectByPriority(pm.localNode.Name, pm.localNode.Id, node.Name, node.Id)
+		logx.Dbg.Printf("[PeerManager] shouldConnectTo: local(%s/%s) -> target(%s/%s) = %v", pm.localNode.Name, pm.localNode.Id, node.Name, node.Id, result)
+		return result
 	default:
 		return true
 	}
 }
 
-func (n *Node) decodeRegistry(name string, sb []byte) error {
+func (pm *PeerManager) decodeRegistryAndConnect(registry *ServiceRegistry, name string, sb []byte) error {
 	existing := make(map[string]struct{})
-	for _, node := range n.registry.GetNodes(name) {
+	for _, node := range registry.GetNodes(name) {
 		existing[node.Id] = struct{}{}
 	}
 
-	nodes, err := n.registry.Unmarshal(name, sb)
+	nodes, err := registry.Unmarshal(name, sb)
 	if err != nil {
 		return err
 	}
@@ -176,20 +221,83 @@ func (n *Node) decodeRegistry(name string, sb []byte) error {
 		if _, ok := existing[node.Id]; ok {
 			continue
 		}
-		if !n.shouldConnectTo(node) {
+		if !pm.shouldConnectTo(node) {
 			continue
 		}
-		if err := n.connectToNode(node); err != nil {
+		if err := pm.connectToNode(node); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func (mr *MessageRouter) serviceByRoute(id int32) string {
+	return mr.registry.GetServiceByRoute(id)
+}
+
+func (mr *MessageRouter) hasRoute(id int32) bool {
+	return mr.registry.HasRoute(id)
+}
+
+func (n *Node) selectNode(name string, s session.Session) (session.Session, error) {
+	return n.router.selectNode(name, s)
+}
+
+func (n *Node) connectToNode(targetNode *NodeInfo) error {
+	return n.peer.connectToNode(targetNode)
+}
+
+func (n *Node) shouldConnectTo(node *NodeInfo) bool {
+	return n.peer.shouldConnectTo(node)
+}
+
+func (n *Node) bindNodeConn(id string, conn session.Session) {
+	n.router.bindNodeConn(id, conn)
+}
+
+func (n *Node) broadcastSessionClose(s session.Session) error {
+	return n.router.broadcastSessionClose(s)
+}
+
+func (n *Node) decodeRegistryAndConnect(name string, sb []byte) error {
+	return n.peer.decodeRegistryAndConnect(n.router.registry, name, sb)
+}
+
 func (n *Node) serviceByRoute(id int32) string {
-	return n.registry.GetServiceByRoute(id)
+	return n.router.serviceByRoute(id)
 }
 
 func (n *Node) hasRoute(id int32) bool {
-	return n.registry.HasRoute(id)
+	return n.router.hasRoute(id)
+}
+
+func (n *Node) nodeBySession(s session.Session, name string) (session.Session, error) {
+	return n.router.nodeBySession(s, name)
+}
+
+func (n *Node) RemoteCallWithAgent(s session.Session, p *protocol.Codec, pack *protocol.Pkt, nodeName string) error {
+	var (
+		agent session.Session
+		err   error
+	)
+	defer pack.Free()
+	switch {
+	case n.router.hasRoute(pack.ID()):
+		agent, err = n.router.nodeBySession(s, nodeName)
+		if err != nil {
+			return err
+		}
+	case n.peer.localNode != nil && n.peer.localNode.Frontend:
+		agent = s
+	default:
+		agent, err = n.GatewayBySession(s)
+		if err != nil {
+			return err
+		}
+	}
+	buf, err := p.Pack(pack.Type(), pack.ID(), pack.SID(), pack.Data())
+	if err != nil {
+		return err
+	}
+	return agent.SendData(buf)
 }

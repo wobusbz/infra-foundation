@@ -3,20 +3,18 @@ package cluster
 import (
 	"fmt"
 	"infra-foundation/clusterpb"
-	"infra-foundation/connmanager"
-	"infra-foundation/packet"
-	"infra-foundation/protomessage"
+	"infra-foundation/logx"
+	"infra-foundation/protocol"
 	"infra-foundation/session"
-	"strconv"
 )
 
 type SessionBinder struct {
-	connManager *connmanager.SessionManager
-	localNode   *NodeInfo
+	connMgr   *session.Manager
+	localNode *NodeInfo
 }
 
-func NewSessionBinder(connManager *connmanager.SessionManager) *SessionBinder {
-	return &SessionBinder{connManager: connManager}
+func NewSessionBinder(connMgr *session.Manager) *SessionBinder {
+	return &SessionBinder{connMgr: connMgr}
 }
 
 func (sb *SessionBinder) SetLocalNode(node *NodeInfo) {
@@ -24,14 +22,9 @@ func (sb *SessionBinder) SetLocalNode(node *NodeInfo) {
 }
 
 func (sb *SessionBinder) BindSessionToNode(sess session.Session, node *NodeInfo) error {
-	id, err := strconv.ParseInt(node.Id, 10, 64)
-	if err != nil {
-		return fmt.Errorf("[SessionBinder/BindSessionToNode] invalid node ID %s: %w", node.Id, err)
-	}
-
-	conn, ok := sb.connManager.GetByID(id)
+	conn, ok := sb.connMgr.GetByID(session.SessionID(node.Id))
 	if !ok {
-		return fmt.Errorf("[SessionBinder/BindSessionToNode] node connection %s not found", node.Id)
+		return fmt.Errorf("node connection %s not found", node.Id)
 	}
 
 	sess.BindServers(node.Name, node.Id)
@@ -41,79 +34,64 @@ func (sb *SessionBinder) BindSessionToNode(sess session.Session, node *NodeInfo)
 	}
 
 	pb := &clusterpb.N2MOnSessionBindServer{
-		SessionID: sess.ID(),
+		SessionID: string(sess.ID()),
 		UID:       sess.UID(),
 		Servers:   sess.Servers(),
 	}
 
-	senderConn, ok := conn.(interface {
-		SendTypePb(typ packet.Type, pb protomessage.ProtoMessage) error
-	})
-	if !ok {
-		return fmt.Errorf("[SessionBinder/BindSessionToNode] connection does not support SendTypePb")
-	}
-
-	return senderConn.SendTypePb(packet.BindConnection, pb)
+	return conn.SendTypePb(int8(protocol.BindSession), pb)
 }
 
 func (sb *SessionBinder) GetNodeConnection(nodeID string) (session.Session, bool) {
-	id, err := strconv.ParseInt(nodeID, 10, 64)
-	if err != nil {
-		return nil, false
-	}
-	return sb.connManager.GetByID(id)
+	return sb.connMgr.GetByID(session.SessionID(nodeID))
 }
 
 func (sb *SessionBinder) StoreNodeConnection(nodeID string, conn session.Session) error {
-	id, err := strconv.ParseInt(nodeID, 10, 64)
-	if err != nil {
-		return fmt.Errorf("[SessionBinder/StoreNodeConnection] invalid node ID %s: %w", nodeID, err)
-	}
-
-	conn.BindID(id)
+	conn.BindID(session.SessionID(nodeID))
 	conn.BindUID(-1)
-	sb.connManager.StoreSession(conn)
+	if se, ok := conn.(interface{ SetPeerConn(bool) }); ok {
+		se.SetPeerConn(true)
+	}
+	sb.connMgr.Store(conn)
 	return nil
 }
 
-func (sb *SessionBinder) GetGateNode(sess session.Session, registry *ServiceRegistry) (session.Session, error) {
-	for _, nodeID := range sess.Servers() {
+func (sb *SessionBinder) GetFrontendNode(sess session.Session, registry *ServiceRegistry) (session.Session, error) {
+	var result session.Session
+	var found bool
+	sess.RangeServers(func(name, nodeID string) bool {
 		node, ok := registry.GetNodeByID(nodeID)
 		if !ok {
-			continue
+			return true
 		}
 		if !node.Frontend {
-			continue
+			return true
 		}
 
-		id, err := strconv.ParseInt(nodeID, 10, 64)
-		if err != nil {
-			continue
-		}
-
-		conn, ok := sb.connManager.GetByID(id)
+		conn, ok := sb.connMgr.GetByID(session.SessionID(nodeID))
 		if !ok {
-			return nil, fmt.Errorf("[SessionBinder/GetGateNode] gate node %s connection not found", nodeID)
+			return true
 		}
-		return conn, nil
+		result = conn
+		found = true
+		return false
+	})
+	if found {
+		return result, nil
 	}
-	return nil, fmt.Errorf("[SessionBinder] session[%d] has no gate node", sess.ID())
+	logx.War.Printf("session %s has no gate node", sess.ID())
+	return nil, fmt.Errorf("session %s has no gate node", sess.ID())
 }
 
 func (sb *SessionBinder) GetNodeByName(sess session.Session, serviceName string) (session.Session, error) {
 	nodeID := sess.GetServers(serviceName)
 	if nodeID == "" {
-		return nil, fmt.Errorf("[SessionBinder/GetNodeByName] session not bound to service %s", serviceName)
+		return nil, fmt.Errorf("session not bound to service %s", serviceName)
 	}
 
-	id, err := strconv.ParseInt(nodeID, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("[SessionBinder/GetNodeByName] invalid node ID %s: %w", nodeID, err)
-	}
-
-	conn, ok := sb.connManager.GetByID(id)
+	conn, ok := sb.connMgr.GetByID(session.SessionID(nodeID))
 	if !ok {
-		return nil, fmt.Errorf("[SessionBinder/GetNodeByName] node %s connection not found", nodeID)
+		return nil, fmt.Errorf("node %s connection not found", nodeID)
 	}
 
 	return conn, nil

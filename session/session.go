@@ -3,24 +3,27 @@ package session
 import (
 	"context"
 	"errors"
-	protomessage "infra-foundation/protomessage"
+	"infra-foundation/message"
 	"maps"
 	"sync"
 	"sync/atomic"
 )
 
-var DefaultConnSession = sessionIDPool{ids: map[int64]struct{}{}}
+var DefaultIDPool = sessionIDPool{ids: map[SessionID]struct{}{}}
 
 type sessionIDPool struct {
-	ids   map[int64]struct{}
-	idsrw sync.RWMutex
+	nextID int64
+	ids    map[SessionID]struct{}
+	idsrw  sync.RWMutex
 }
 
 func (d *sessionIDPool) Count() int64 {
+	d.idsrw.RLock()
+	defer d.idsrw.RUnlock()
 	return int64(len(d.ids))
 }
 
-func (d *sessionIDPool) Remove(id int64) {
+func (d *sessionIDPool) Remove(id SessionID) {
 	d.idsrw.Lock()
 	delete(d.ids, id)
 	d.idsrw.Unlock()
@@ -28,21 +31,15 @@ func (d *sessionIDPool) Remove(id int64) {
 
 func (d *sessionIDPool) Reset() {
 	d.idsrw.Lock()
-	d.ids = map[int64]struct{}{}
+	d.ids = map[SessionID]struct{}{}
 	d.idsrw.Unlock()
 }
 
-func (d *sessionIDPool) NextID() int64 {
+func (d *sessionIDPool) NextID(prefix string) SessionID {
+	id := GenerateSessionID(prefix)
 	d.idsrw.Lock()
-	defer d.idsrw.Unlock()
-	var id int64 = 1
-	for {
-		if _, ok := d.ids[id]; !ok {
-			break
-		}
-		id++
-	}
 	d.ids[id] = struct{}{}
+	d.idsrw.Unlock()
 	return id
 }
 
@@ -52,81 +49,109 @@ type Context struct {
 	MsgID   int32
 }
 
-type HandlerFunc func(*Context, protomessage.ProtoMessage)
+type HandlerFunc func(*Context, message.Message)
 
-// Messenger 负责消息的实际投递与连接关闭，可与 Session 身份解耦。
+type PacketSender interface {
+	SendData(data []byte) error
+}
+
+type TypePbSender interface {
+	SendTypePb(typ int8, pb message.Message) error
+}
+
 type Messenger interface {
-	Send(pb protomessage.ProtoMessage) error
-	Notify(targets []Session, pb protomessage.ProtoMessage) error
+	Send(pb message.Message) error
+	Notify(targets []Session, pb message.Message) error
 	Close() error
 }
 
-// Session 代表一个可寻址的会话实体，既可以是活跃的网络连接，也可以是离线代理。
+// Session 接口定义
 type Session interface {
-	ID() int64
+	ID() SessionID
 	UID() int64
-	BindID(id int64)
+	BindID(id SessionID)
 	BindUID(uid int64)
 	GetServers(name string) string
 	BindServers(name, id string)
 	Servers() map[string]string
-	Send(pb protomessage.ProtoMessage) error
-	Notify(targets []Session, pb protomessage.ProtoMessage) error
+	RangeServers(fn func(name, id string) bool)
+	Send(pb message.Message) error
+	Notify(targets []Session, pb message.Message) error
 	Close() error
+	PacketSender
+	TypePbSender
 }
 
-// Base 提供了 Session 的通用实现，将 Messenger 委托给注入的实现。
-// 这消除了 NetPollConnection/ClientConnection/TCPClient/acceptor 中重复的 Send/Notify/Close 代码。
-type Base struct {
+type SessionBase struct {
 	*SessionEntity
 	Messenger Messenger
 }
 
-func (b *Base) Send(pb protomessage.ProtoMessage) error {
+func (b *SessionBase) Send(pb message.Message) error {
 	if b.Messenger == nil {
 		return errors.New("session: messenger not set")
 	}
 	return b.Messenger.Send(pb)
 }
 
-func (b *Base) Notify(targets []Session, pb protomessage.ProtoMessage) error {
+func (b *SessionBase) Notify(targets []Session, pb message.Message) error {
 	if b.Messenger == nil {
 		return errors.New("session: messenger not set")
 	}
 	return b.Messenger.Notify(targets, pb)
 }
 
-func (b *Base) Close() error {
+func (b *SessionBase) Close() error {
 	if b.Messenger == nil {
 		return nil
 	}
 	return b.Messenger.Close()
 }
 
-type SessionEntity struct {
-	Id        atomic.Int64
-	Uid       atomic.Int64
-	servers   map[string]string
-	serversrw sync.RWMutex
+func (b *SessionBase) SendData(data []byte) error {
+	return errors.New("session: SendData not implemented")
 }
 
-func NewSessionEntity(id, uid int64) *SessionEntity {
+func (b *SessionBase) SendTypePb(typ int8, pb message.Message) error {
+	return errors.New("session: SendTypePb not implemented")
+}
+
+type SessionEntity struct {
+	id         atomic.Value // SessionID
+	uid        atomic.Int64
+	isPeerConn atomic.Bool
+	servers    map[string]string
+	serversrw  sync.RWMutex
+}
+
+// NewSessionEntity 创建新的 SessionEntity
+func NewSessionEntity(id SessionID, uid int64) *SessionEntity {
 	n := &SessionEntity{servers: map[string]string{}}
-	n.Uid.Store(uid)
-	n.Id.Store(id)
+	n.uid.Store(uid)
+	n.id.Store(id)
 	return n
 }
 
-func (n *SessionEntity) ID() int64         { return n.Id.Load() }
-func (n *SessionEntity) UID() int64        { return n.Uid.Load() }
-func (n *SessionEntity) BindID(id int64)   { n.Id.Store(id) }
-func (n *SessionEntity) BindUID(uid int64) { n.Uid.Store(uid) }
+func (n *SessionEntity) ID() SessionID {
+	v := n.id.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(SessionID)
+}
+
+func (n *SessionEntity) UID() int64           { return n.uid.Load() }
+func (n *SessionEntity) BindID(id SessionID)    { n.id.Store(id) }
+func (n *SessionEntity) BindUID(uid int64)      { n.uid.Store(uid) }
+func (n *SessionEntity) IsPeerConn() bool       { return n.isPeerConn.Load() }
+func (n *SessionEntity) SetPeerConn(v bool)     { n.isPeerConn.Store(v) }
 
 func (n *SessionEntity) GetServers(name string) string {
 	n.serversrw.RLock()
 	defer n.serversrw.RUnlock()
 	return n.servers[name]
 }
+
 func (n *SessionEntity) BindServers(name, id string) {
 	n.serversrw.Lock()
 	n.servers[name] = id
@@ -136,7 +161,20 @@ func (n *SessionEntity) BindServers(name, id string) {
 func (n *SessionEntity) Servers() map[string]string {
 	n.serversrw.RLock()
 	defer n.serversrw.RUnlock()
+	if len(n.servers) == 0 {
+		return nil
+	}
 	servers := make(map[string]string, len(n.servers))
 	maps.Copy(servers, n.servers)
 	return servers
+}
+
+func (n *SessionEntity) RangeServers(fn func(name, id string) bool) {
+	n.serversrw.RLock()
+	defer n.serversrw.RUnlock()
+	for name, id := range n.servers {
+		if !fn(name, id) {
+			break
+		}
+	}
 }

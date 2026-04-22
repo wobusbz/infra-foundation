@@ -2,7 +2,9 @@ package cluster
 
 import (
 	"encoding/json"
+	"infra-foundation/logx"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -26,41 +28,37 @@ func NewServiceRegistry() *ServiceRegistry {
 	return &ServiceRegistry{nodes: make(map[string][]*NodeInfo), idNodes: make(map[string]*NodeInfo), routes: make(map[int32]string)}
 }
 
-func (r *ServiceRegistry) AddNode(name, id, addr string, frontend bool, routes []int32) {
+func (r *ServiceRegistry) AddNode(nodes *NodeInfo) {
+	name := strings.ToLower(nodes.Name)
 	r.m.Lock()
 	defer r.m.Unlock()
 
-	// 去重：如果节点已存在，更新信息而不是重复添加
+	cloned := &NodeInfo{
+		Id:       nodes.Id,
+		Name:     name,
+		Addr:     nodes.Addr,
+		Frontend: nodes.Frontend,
+		Routes:   append([]int32{}, nodes.Routes...),
+	}
+
 	for i, n := range r.nodes[name] {
-		if n.Id == id {
-			r.nodes[name][i].Addr = addr
-			r.nodes[name][i].Frontend = frontend
-			r.nodes[name][i].Routes = routes
-			r.idNodes[id] = r.nodes[name][i]
-			r.rebuildRoutesLocked(name, id, routes)
+		if n.Id == nodes.Id {
+			r.nodes[name][i] = cloned
+			r.idNodes[nodes.Id] = cloned
+			r.rebuildRoutesLocked(name, cloned.Routes)
 			return
 		}
 	}
 
-	node := &NodeInfo{
-		Id:       id,
-		Name:     name,
-		Addr:     addr,
-		Frontend: frontend,
-		Routes:   routes,
-	}
+	r.nodes[name] = append(r.nodes[name], cloned)
+	r.idNodes[nodes.Id] = cloned
 
-	r.nodes[name] = append(r.nodes[name], node)
-	r.idNodes[id] = node
-
-	r.rebuildRoutesLocked(name, id, routes)
+	r.rebuildRoutesLocked(name, cloned.Routes)
 }
 
-// rebuildRoutesLocked 在持有 r.m 锁的情况下重建路由表。
-func (r *ServiceRegistry) rebuildRoutesLocked(name, updatedID string, newRoutes []int32) {
+func (r *ServiceRegistry) rebuildRoutesLocked(name string, newRoutes []int32) {
 	r.routesMu.Lock()
 	defer r.routesMu.Unlock()
-	// 清理旧路由中不再被该服务任何节点持有的条目
 	for routeID, svcName := range r.routes {
 		if svcName != name {
 			continue
@@ -82,6 +80,7 @@ func (r *ServiceRegistry) rebuildRoutesLocked(name, updatedID string, newRoutes 
 }
 
 func (r *ServiceRegistry) GetNodes(name string) []*NodeInfo {
+	name = strings.ToLower(name)
 	r.m.RLock()
 	defer r.m.RUnlock()
 
@@ -131,26 +130,25 @@ func (r *ServiceRegistry) Marshal(name string) (string, error) {
 }
 
 func (r *ServiceRegistry) Unmarshal(name string, data []byte) ([]*NodeInfo, error) {
-	var nodes []*NodeInfo
+	name = strings.ToLower(name)
+	var nodes *NodeInfo
 	if err := json.Unmarshal(data, &nodes); err != nil {
 		return nil, err
 	}
 	r.m.Lock()
-	r.nodes[name] = nodes
-	for _, node := range nodes {
-		r.idNodes[node.Id] = node
-	}
+	r.nodes[name] = slices.DeleteFunc(r.nodes[name], func(node *NodeInfo) bool { return node.Addr == nodes.Addr })
 	r.m.Unlock()
 
+	r.AddNode(nodes)
+
 	r.routesMu.Lock()
-	for _, node := range nodes {
-		for _, routeID := range node.Routes {
-			r.routes[routeID] = node.Name
-		}
+
+	logx.Dbg.Println(string(data))
+	for _, rid := range nodes.Routes {
+		r.routes[rid] = name
 	}
 	r.routesMu.Unlock()
-
-	return nodes, nil
+	return r.GetNodes(name), nil
 }
 
 func (r *ServiceRegistry) Size() int {
@@ -177,6 +175,7 @@ func (r *ServiceRegistry) HasNode(name, id string) bool {
 }
 
 func (r *ServiceRegistry) RemoveNode(name, id string) {
+	name = strings.ToLower(name)
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -202,6 +201,13 @@ func (r *ServiceRegistry) RemoveNode(name, id string) {
 	for routeID, svcName := range r.routes {
 		if svcName == name {
 			delete(r.routes, routeID)
+		}
+	}
+	if nodes, ok := r.nodes[name]; ok {
+		for _, n := range nodes {
+			for _, rid := range n.Routes {
+				r.routes[rid] = name
+			}
 		}
 	}
 }

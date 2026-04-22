@@ -14,7 +14,7 @@ type Scheduler struct {
 	chDie     chan struct{}
 	taskLock  sync.Mutex
 	taskCond  *sync.Cond
-	tasks     []TimerFunc
+	tasks     []TaskFunc
 	started   atomic.Bool
 	timeWheel *TimerWheel
 	tick      time.Duration
@@ -27,30 +27,19 @@ const (
 	defaultSlotNum = 1024
 )
 
-func init() {
-	if config.Default.SchedulerTick <= 0 {
-		config.Default.SchedulerTick = defaultTick
-	}
-	if config.Default.SchedulerSlotNum <= 0 {
-		config.Default.SchedulerSlotNum = defaultSlotNum
-	}
-}
-
 func NewScheduler() *Scheduler {
-	return NewSchedulerWith(config.Default.SchedulerSlotNum, config.Default.SchedulerTick)
-}
-
-func NewSchedulerWith(slotNum int, tick time.Duration) *Scheduler {
-	if slotNum <= 0 {
-		slotNum = defaultSlotNum
-	}
+	tick := config.Default.SchedulerTick
 	if tick <= 0 {
 		tick = defaultTick
+	}
+	slotNum := config.Default.SchedulerSlotNum
+	if slotNum <= 0 {
+		slotNum = defaultSlotNum
 	}
 
 	s := &Scheduler{
 		chDie:   make(chan struct{}),
-		tasks:   make([]TimerFunc, 0, config.Default.SchedulerTaskCap),
+		tasks:   make([]TaskFunc, 0, config.Default.SchedulerTaskCap),
 		tick:    tick,
 		slotNum: slotNum,
 	}
@@ -58,7 +47,7 @@ func NewSchedulerWith(slotNum int, tick time.Duration) *Scheduler {
 	s.timeWheel = newTimerWheel(slotNum, tick, s)
 	s.started.Store(true)
 
-	s.wg.Go(s.sched)
+	s.wg.Go(s.runTicker)
 	s.wg.Go(s.runExecutor)
 	return s
 }
@@ -80,14 +69,14 @@ func (s *Scheduler) Wait() {
 	s.wg.Wait()
 }
 
-func (s *Scheduler) sched() {
+func (s *Scheduler) runTicker() {
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			s.timeWheel.tickerHandler()
+			s.timeWheel.advance()
 		case <-s.chDie:
 			return
 		}
@@ -112,14 +101,14 @@ func (s *Scheduler) runExecutor() {
 		s.taskLock.Unlock()
 
 		for _, fn := range batch {
-			try(fn)
+			safeRun(fn)
 		}
 
 		s.taskLock.Lock()
 	}
 }
 
-func (s *Scheduler) PushTask(fn TimerFunc) {
+func (s *Scheduler) PushTask(fn TaskFunc) {
 	if !s.started.Load() || fn == nil {
 		return
 	}
@@ -130,23 +119,23 @@ func (s *Scheduler) PushTask(fn TimerFunc) {
 	s.taskLock.Unlock()
 }
 
-func (s *Scheduler) PushAfter(delay time.Duration, fn TimerFunc) (TimerID, error) {
+func (s *Scheduler) PushAfter(delay time.Duration, fn TaskFunc) (TimerID, error) {
 	if !s.started.Load() || fn == nil {
 		return 0, errors.New("scheduler not started or nil func")
 	}
 	return s.timeWheel.addTimer(delay, false, fn)
 }
 
-func (s *Scheduler) PushEvery(interval time.Duration, fn TimerFunc) (TimerID, error) {
+func (s *Scheduler) PushEvery(interval time.Duration, fn TaskFunc) (TimerID, error) {
 	if !s.started.Load() || fn == nil {
 		return 0, errors.New("scheduler not started or nil func")
 	}
 	return s.timeWheel.addTimer(interval, true, fn)
 }
 
-func (s *Scheduler) ScheduleTimer(interval time.Duration, infinite bool, fn TimerFunc) TimerID {
+func (s *Scheduler) ScheduleTimer(interval time.Duration, recurring bool, fn TaskFunc) TimerID {
 	var id TimerID
-	if infinite {
+	if recurring {
 		id, _ = s.PushEvery(interval, fn)
 	} else {
 		id, _ = s.PushAfter(interval, fn)
@@ -158,7 +147,7 @@ func (s *Scheduler) CancelTimer(id TimerID) bool {
 	return s.timeWheel.cancelTimer(id)
 }
 
-func try(cb func()) {
+func safeRun(cb func()) {
 	defer func() {
 		if err := recover(); err != nil {
 			logx.Err.Printf("scheduler: panic: %+v\n%s\n", err, debug.Stack())

@@ -24,7 +24,7 @@ const (
 
 type N2MSend struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionID     int64                  `protobuf:"varint,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
+	SessionID     string                 `protobuf:"bytes,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
 	MsgID         int32                  `protobuf:"varint,2,opt,name=MsgID,proto3" json:"MsgID,omitempty"`
 	Plyload       []byte                 `protobuf:"bytes,3,opt,name=Plyload,proto3" json:"Plyload,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -61,11 +61,11 @@ func (*N2MSend) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *N2MSend) GetSessionID() int64 {
+func (x *N2MSend) GetSessionID() string {
 	if x != nil {
 		return x.SessionID
 	}
-	return 0
+	return ""
 }
 
 func (x *N2MSend) GetMsgID() int32 {
@@ -204,7 +204,7 @@ func (x *M2NOnConnection) GetFrontend() bool {
 
 type N2MOnSessionBindServer struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionID     int64                  `protobuf:"varint,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
+	SessionID     string                 `protobuf:"bytes,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
 	UID           int64                  `protobuf:"varint,2,opt,name=UID,proto3" json:"UID,omitempty"`
 	Servers       map[string]string      `protobuf:"bytes,3,rep,name=Servers,proto3" json:"Servers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
@@ -241,11 +241,11 @@ func (*N2MOnSessionBindServer) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *N2MOnSessionBindServer) GetSessionID() int64 {
+func (x *N2MOnSessionBindServer) GetSessionID() string {
 	if x != nil {
 		return x.SessionID
 	}
-	return 0
+	return ""
 }
 
 func (x *N2MOnSessionBindServer) GetUID() int64 {
@@ -264,7 +264,7 @@ func (x *N2MOnSessionBindServer) GetServers() map[string]string {
 
 type N2MOnSessionClose struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionID     int64                  `protobuf:"varint,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
+	SessionID     string                 `protobuf:"bytes,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -299,16 +299,16 @@ func (*N2MOnSessionClose) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *N2MOnSessionClose) GetSessionID() int64 {
+func (x *N2MOnSessionClose) GetSessionID() string {
 	if x != nil {
 		return x.SessionID
 	}
-	return 0
+	return ""
 }
 
 type N2MNotify struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionID     []int64                `protobuf:"varint,1,rep,packed,name=SessionID,proto3" json:"SessionID,omitempty"`
+	SessionID     []string               `protobuf:"bytes,1,rep,name=SessionID,proto3" json:"SessionID,omitempty"`
 	Plyload       []byte                 `protobuf:"bytes,2,opt,name=Plyload,proto3" json:"Plyload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -344,7 +344,7 @@ func (*N2MNotify) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *N2MNotify) GetSessionID() []int64 {
+func (x *N2MNotify) GetSessionID() []string {
 	if x != nil {
 		return x.SessionID
 	}
@@ -364,7 +364,7 @@ const file_cluster_proto_rawDesc = "" +
 	"\n" +
 	"\rcluster.proto\x12\acluster\"W\n" +
 	"\aN2MSend\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x01(\x03R\tSessionID\x12\x14\n" +
+	"\tSessionID\x18\x01 \x01(\tR\tSessionID\x12\x14\n" +
 	"\x05MsgID\x18\x02 \x01(\x05R\x05MsgID\x12\x18\n" +
 	"\aPlyload\x18\x03 \x01(\fR\aPlyload\"Q\n" +
 	"\x0fN2MOnConnection\x12\x0e\n" +
@@ -376,16 +376,16 @@ const file_cluster_proto_rawDesc = "" +
 	"\x04Name\x18\x02 \x01(\tR\x04Name\x12\x1a\n" +
 	"\bFrontend\x18\x03 \x01(\bR\bFrontend\"\xcc\x01\n" +
 	"\x16N2MOnSessionBindServer\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x01(\x03R\tSessionID\x12\x10\n" +
+	"\tSessionID\x18\x01 \x01(\tR\tSessionID\x12\x10\n" +
 	"\x03UID\x18\x02 \x01(\x03R\x03UID\x12F\n" +
 	"\aServers\x18\x03 \x03(\v2,.cluster.N2MOnSessionBindServer.ServersEntryR\aServers\x1a:\n" +
 	"\fServersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"1\n" +
 	"\x11N2MOnSessionClose\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x01(\x03R\tSessionID\"C\n" +
+	"\tSessionID\x18\x01 \x01(\tR\tSessionID\"C\n" +
 	"\tN2MNotify\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x03(\x03R\tSessionID\x12\x18\n" +
+	"\tSessionID\x18\x01 \x03(\tR\tSessionID\x12\x18\n" +
 	"\aPlyload\x18\x02 \x01(\fR\aPlyloadB\fZ\n" +
 	"./;clusterb\x06proto3"
 
@@ -443,3 +443,9 @@ func file_cluster_proto_init() {
 	file_cluster_proto_goTypes = nil
 	file_cluster_proto_depIdxs = nil
 }
+
+
+
+
+
+

@@ -5,35 +5,26 @@ import (
 	"fmt"
 	"infra-foundation/cluster"
 	"infra-foundation/example/protos"
-	"infra-foundation/localipaddr"
 	"infra-foundation/logx"
 	"infra-foundation/model"
-	"infra-foundation/protomessage"
 	"infra-foundation/session"
 	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"strconv"
 	"strings"
 )
 
 func init() {
-	model.RegisterHandler(&protos.N2MLogin{}, C2SLogin)
-}
-
-func C2SLogin(s session.Session, pm protomessage.ProtoMessage) {
-	pb := &protos.S2CLogin{Name: "Client TO ID " + strconv.Itoa(int(s.ID()))}
-	// if err := s.Notify(nil, pb); err != nil {
-	// 	logx.Err.Println(err)
-	// 	return
-	// }
-	if rand.Int()&1 == 0 {
-	}
-	err := s.Send(pb)
-	if err != nil {
-		logx.Err.Println(err)
-	}
+	model.RegisterTypedHandler(&protos.N2MLogin{}, func(ctx *session.Context, pb *protos.N2MLogin) {
+		reply := &protos.S2CLogin{Name: "Client TO ID " + string(ctx.Session.ID())}
+		if rand.Int()&1 == 0 {
+		}
+		err := ctx.Session.Send(reply)
+		if err != nil {
+			logx.Err.Println(err)
+		}
+	})
 }
 
 type User struct {
@@ -53,26 +44,31 @@ func (r *User) OnDisconnection(s session.Session) {
 
 func main() {
 	go func() {
-		http.ListenAndServe("0.0.0.0:9008", nil)
+		pp := os.Getenv("PPROF_PORT")
+		if pp == "" {
+			pp = "9008"
+		}
+		http.ListenAndServe("0.0.0.0:"+pp, nil)
 	}()
-	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "192.168.110.67:2379")
+
+	model.Register(&User{})
+
+	s := cluster.NewServer()
+
+	localAddr := "127.0.0.1"
+
+	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "localhost:2379", s.ClusterNode())
 	if err != nil {
 		panic(err)
 	}
 	defer discovery.Close()
-	model.Register(&User{})
 
-	localAddr, err := localipaddr.LocalIPAddr()
-	if err != nil {
+	logx.Dbg.Println(model.GetLocalHandlerIDs())
+	adver := fmt.Sprintf("%s:%s", localAddr, strings.Split(os.Args[2], ":")[1])
+	if err := discovery.RegisterService(os.Args[1], adver, false, model.GetLocalHandlerIDs()); err != nil {
 		panic(err)
 	}
-	localAddr = "192.168.110.67"
 
-	logx.Dbg.Println(model.HandlersRoutes())
-
-	discovery.RegisterService(os.Args[1], fmt.Sprintf("%s:%s", localAddr, strings.Split(os.Args[2], ":")[1]), false, model.HandlersRoutes())
-
-	s := cluster.NewServer()
 	if err := s.Listen(os.Args[2]); err != nil {
 		panic(err)
 	}

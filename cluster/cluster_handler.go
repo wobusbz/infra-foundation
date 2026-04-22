@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"infra-foundation/clusterpb"
-	"infra-foundation/connmanager"
-	"infra-foundation/logx"
 	"infra-foundation/model"
 	"infra-foundation/session"
 
@@ -13,97 +11,87 @@ import (
 )
 
 type ClusterHandler struct {
-	connManager  *connmanager.SessionManager
+	connMgr      *session.Manager
 	modelManager *model.ModelManager
 	node         *Node
 }
 
-func (h *ClusterHandler) handleSessionClose(data []byte, connID int64) error {
+func NewClusterHandler(connMgr *session.Manager, modelManager *model.ModelManager, node *Node) *ClusterHandler {
+	return &ClusterHandler{
+		connMgr:      connMgr,
+		modelManager: modelManager,
+		node:         node,
+	}
+}
+
+func (h *ClusterHandler) handleDisconnect(data []byte) error {
 	var pb clusterpb.N2MOnSessionClose
 	if err := proto.Unmarshal(data, &pb); err != nil {
-		return fmt.Errorf("[ClusterHandler/handleSessionClose] ConnID[%d] Unmarshal %w", connID, err)
+		return fmt.Errorf("unmarshal session close: %w", err)
 	}
-	conn, ok := h.connManager.GetByID(pb.SessionID)
+	conn, ok := h.connMgr.GetByID(session.SessionID(pb.SessionID))
 	if !ok {
-		return fmt.Errorf("[ClusterHandler/handleSessionClose] ConnID[%d] SessionID: %d not found", connID, pb.SessionID)
+		return fmt.Errorf("session %s not found", pb.SessionID)
 	}
 	return conn.Close()
 }
 
-func (h *ClusterHandler) handleBindConnection(data []byte, connID int64) error {
+func (h *ClusterHandler) handleBindSession(data []byte) error {
 	var pb clusterpb.N2MOnSessionBindServer
 	if err := proto.Unmarshal(data, &pb); err != nil {
-		return fmt.Errorf("[ClusterHandler/handleBindConnection] ConnID[%d] Unmarshal %w", connID, err)
+		return fmt.Errorf("unmarshal bind connection: %w", err)
 	}
-	conn, ok := h.connManager.GetByID(pb.SessionID)
+	conn, ok := h.connMgr.GetByID(session.SessionID(pb.SessionID))
 	if !ok {
-		conn = NewProxySession(session.NewSessionEntity(pb.SessionID, pb.UID), h.node)
-		h.connManager.StoreSession(conn)
+		conn = NewProxySession(session.NewSessionEntity(session.SessionID(pb.SessionID), pb.UID), h.node, h.modelManager, h.connMgr, h.node.PeerMgr())
+		h.connMgr.Store(conn)
 	}
 	for name, id := range pb.GetServers() {
 		conn.BindServers(name, id)
 	}
-	logx.Dbg.Printf("[ClusterHandler/handleBindConnection] ConnID[%d] SessionID: %d %v", connID, pb.SessionID, conn.Servers())
 	return nil
 }
 
-func (h *ClusterHandler) handleInternalData(id int32, sid, connID int64, data []byte) error {
-	if !model.IsLocalHandler(id) {
-		return fmt.Errorf("[ClusterHandler/handleInternalData] ConnID[%d] MessageID: %d not found", connID, id)
+func (h *ClusterHandler) handleServiceCall(id int32, sid string, data []byte) error {
+	if !h.modelManager.IsLocalHandler(id) {
+		return fmt.Errorf("message %d not found", id)
 	}
-	conn, ok := h.connManager.GetByID(sid)
+	conn, ok := h.connMgr.GetByID(session.SessionID(sid))
 	if !ok {
-		return fmt.Errorf("[ClusterHandler/handleInternalData] ConnID[%d] SessionID: %d not found", connID, sid)
+		return fmt.Errorf("session %s not found", sid)
 	}
 	return h.modelManager.Dispatch(conn, id, data)
 }
 
-func (h *ClusterHandler) handleClientData(sid, connID int64, data []byte) error {
-	conn, ok := h.connManager.GetByID(sid)
+func (h *ClusterHandler) handleResponse(sid string, data []byte) error {
+	conn, ok := h.connMgr.GetByID(session.SessionID(sid))
 	if !ok {
-		return fmt.Errorf("[ClusterHandler/handleClientData] ConnID[%d] SessionID: %d not found", connID, sid)
+		return fmt.Errorf("session %s not found", sid)
 	}
-	sender, ok := conn.(interface{ SendData([]byte) error })
-	if !ok {
-		return fmt.Errorf("[ClusterHandler/handleClientData] ConnID[%d] 反射 SendData", connID)
-	}
-	return sender.SendData(data)
+	return conn.SendData(data)
 }
 
-func (h *ClusterHandler) handleNotifyData(data []byte, connID int64) error {
+func (h *ClusterHandler) handlePush(data []byte) error {
 	var pb clusterpb.N2MNotify
 	if err := proto.Unmarshal(data, &pb); err != nil {
-		return fmt.Errorf("[ClusterHandler/handleNotifyData] ConnID[%d] Unmarshal %w", connID, err)
+		return fmt.Errorf("unmarshal notify: %w", err)
 	}
 
 	if len(pb.SessionID) == 0 {
-		return h.connManager.Range(func(s session.Session) error {
-			sender, ok := s.(interface{ SendData([]byte) error })
-			if !ok {
-				return fmt.Errorf("[ClusterHandler/handleNotifyData] Range 反射 SendData")
-			}
-			return sender.SendData(pb.Plyload)
-		})
+		return h.connMgr.Range(func(s session.Session) error { return s.SendData(pb.Plyload) })
 	}
 
 	var errs []error
 	for _, sid := range pb.SessionID {
-		conn, ok := h.connManager.GetByID(sid)
+		conn, ok := h.connMgr.GetByID(session.SessionID(sid))
 		if !ok {
-			errs = append(errs, fmt.Errorf("[ClusterHandler/handleNotifyData] ConnID[%d] SessionID: %d not found", connID, sid))
+			errs = append(errs, fmt.Errorf("session %s not found", sid))
 			continue
 		}
-		sender, ok := conn.(interface{ SendData([]byte) error })
-		if !ok {
-			errs = append(errs, fmt.Errorf("[ClusterHandler/handleNotifyData] 反射 SendData"))
-			continue
-		}
-		errs = append(errs, sender.SendData(pb.Plyload))
+		errs = append(errs, conn.SendData(pb.Plyload))
 	}
 	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("[ClusterHandler/handleNotifyData] Notify error: %w", err)
+		return fmt.Errorf("notify: %w", err)
 	}
 	return nil
 }
-
-

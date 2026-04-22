@@ -1,10 +1,10 @@
 package main
 
 import (
-	"infra-foundation/cluster"
 	"infra-foundation/example/protos"
 	"infra-foundation/logx"
-	"infra-foundation/protomessage"
+	"infra-foundation/message"
+	"infra-foundation/transport"
 	"math/rand/v2"
 	"os"
 	"sync"
@@ -43,12 +43,12 @@ func main() {
 
 	for range connNum {
 		wg.Go(func() {
-			c := cluster.NewTCPClient()
-			if err := c.DialConnection(os.Args[1]); err != nil {
+			c := transport.NewTCPClient()
+			if err := c.Dial(os.Args[1]); err != nil {
 				panic(err)
 			}
 			connCount.Add(1)
-			c.RegisterHandler(&protos.S2CLogin{}, func(cc *cluster.TCPClient, pb protomessage.ProtoMessage) {})
+			c.RegisterHandler(&protos.S2CLogin{}, func(cc *transport.TCPClient, pb message.Message) {})
 			for range msgNum {
 				select {
 				case <-exitC:
@@ -64,8 +64,5 @@ func main() {
 	}
 	wg.Wait()
 	logx.Dbg.Println("所有连接任务完成")
-	// cg := make(chan os.Signal, 1)
-	// signal.Notify(cg, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	// <-cg
 	close(exitC)
 }

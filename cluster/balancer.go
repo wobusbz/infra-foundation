@@ -2,21 +2,25 @@ package cluster
 
 import (
 	"fmt"
+	"infra-foundation/logx"
 	"math/rand"
 	"slices"
 	"sync"
+	"time"
 )
 
 type LoadBalancer struct {
 	registry *ServiceRegistry
 	health   map[string]bool
 	mu       sync.RWMutex
+	rnd      *rand.Rand
 }
 
 func NewLoadBalancer(registry *ServiceRegistry) *LoadBalancer {
 	return &LoadBalancer{
 		registry: registry,
 		health:   make(map[string]bool),
+		rnd:      rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -44,17 +48,16 @@ func (lb *LoadBalancer) Pick(serviceName string) (*NodeInfo, error) {
 	}
 	lb.mu.RUnlock()
 
-	// 如果没有健康节点，但存在注册节点，说明健康状态尚未初始化；
-	// 此时降级为使用全部节点，避免首次启动时无法选点。
 	if len(healthyNodes) == 0 && len(nodes) > 0 {
 		healthyNodes = nodes
 	}
 
 	if len(healthyNodes) == 0 {
-		return nil, fmt.Errorf("[LoadBalancer/Pick] service %s has no available nodes", serviceName)
+		logx.War.Printf("no available nodes for service: %s", serviceName)
+		return nil, fmt.Errorf("no available nodes for service: %s", serviceName)
 	}
 
-	idx := rand.Intn(len(healthyNodes))
+	idx := lb.rnd.Intn(len(healthyNodes))
 	return healthyNodes[idx], nil
 }
 
@@ -79,17 +82,18 @@ func (lb *LoadBalancer) PickFrontend(serviceName string) (*NodeInfo, error) {
 	}
 
 	if len(frontendNodes) == 0 {
-		return nil, fmt.Errorf("[LoadBalancer/PickFrontend] service %s has no frontend nodes", serviceName)
+		logx.War.Printf("no frontend nodes for service: %s", serviceName)
+		return nil, fmt.Errorf("no frontend nodes for service: %s", serviceName)
 	}
 
-	idx := rand.Intn(len(frontendNodes))
+	idx := lb.rnd.Intn(len(frontendNodes))
 	return frontendNodes[idx], nil
 }
 
 func (lb *LoadBalancer) PickByID(id string) (*NodeInfo, error) {
 	node, ok := lb.registry.GetNodeByID(id)
 	if !ok {
-		return nil, fmt.Errorf("[LoadBalancer/PickByID] node %s not found", id)
+		return nil, fmt.Errorf("node %s not found", id)
 	}
 	return node, nil
 }

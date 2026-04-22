@@ -202,7 +202,7 @@ var File_user_proto protoreflect.FileDescriptor
 const file_user_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"user.proto\x12\x04user\x1a\vroute.proto\"\x1e\n" +
+	"user.proto\x12\tgame.user\"\x1e\n" +
 	"\bC2SLogin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1e\n" +
 	"\bS2CLogin\x12\x12\n" +
@@ -210,7 +210,7 @@ const file_user_proto_rawDesc = "" +
 	"\bM2NLogin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1e\n" +
 	"\bN2MLogin\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04nameB\x16\x8a\xb5\x18\tGAME.userZ\a/protosb\x06proto3"
+	"\x04name\x18\x01 \x01(\tR\x04nameB\tZ\a/protosb\x06proto3"
 
 var (
 	file_user_proto_rawDescOnce sync.Once
@@ -226,10 +226,10 @@ func file_user_proto_rawDescGZIP() []byte {
 
 var file_user_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_user_proto_goTypes = []any{
-	(*C2SLogin)(nil), // 0: user.C2SLogin
-	(*S2CLogin)(nil), // 1: user.S2CLogin
-	(*M2NLogin)(nil), // 2: user.M2NLogin
-	(*N2MLogin)(nil), // 3: user.N2MLogin
+	(*C2SLogin)(nil), // 0: game.user.C2SLogin
+	(*S2CLogin)(nil), // 1: game.user.S2CLogin
+	(*M2NLogin)(nil), // 2: game.user.M2NLogin
+	(*N2MLogin)(nil), // 3: game.user.N2MLogin
 }
 var file_user_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -244,7 +244,6 @@ func file_user_proto_init() {
 	if File_user_proto != nil {
 		return
 	}
-	file_route_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

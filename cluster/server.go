@@ -5,30 +5,26 @@ import (
 	"fmt"
 	"infra-foundation/clusterpb"
 	"infra-foundation/config"
-	"infra-foundation/connmanager"
 	"infra-foundation/logx"
 	"infra-foundation/model"
-	"infra-foundation/packet"
-	"infra-foundation/processor"
+	"infra-foundation/protocol"
+	"infra-foundation/queue"
 	"infra-foundation/scheduler"
 	"infra-foundation/session"
 	"os"
 	"os/signal"
-	"strconv"
+
 	"syscall"
+	"time"
 
 	"github.com/cloudwego/netpoll"
 )
 
-type ServerContext interface {
-	ConnManager() *connmanager.SessionManager
+type Server interface {
+	ConnMgr() *session.Manager
 	ModelManager() *model.ModelManager
 	Scheduler() *scheduler.Scheduler
-	WorkMessage() *processor.MsgQueue
-}
-
-type Server interface {
-	ServerContext
+	TaskQueue() *queue.TaskQueue
 	ClusterNode() *Node
 	Listen(addr string) error
 	ListenWeb(addr string)
@@ -36,36 +32,123 @@ type Server interface {
 	Shutdown(ctx context.Context) error
 }
 
-type server struct {
-	serverHandler  *ServerHandler
-	poll         netpoll.EventLoop
-	connManager  *connmanager.SessionManager
+type ServerOption func(*serverOptions)
+
+type serverOptions struct {
+	connMgr      *session.Manager
 	modelManager *model.ModelManager
 	scheduler    *scheduler.Scheduler
-	workMessage  *processor.MsgQueue
-	httpServer     *HTTPServer
-	node           *Node
+	msgQueue     *queue.TaskQueue
+	config       *config.Config
 }
 
-func NewServer() Server {
-	s := &server{
-		connManager:  connmanager.NewSessionManager(),
-		modelManager: model.DefaultModelManager,
-		scheduler:    scheduler.NewScheduler(),
-		workMessage:  processor.NewMsgQueue(),
-		node:         newNode(),
+func WithConnMgr(cm *session.Manager) ServerOption {
+	return func(o *serverOptions) {
+		o.connMgr = cm
+	}
+}
+
+func WithModelManager(mm *model.ModelManager) ServerOption {
+	return func(o *serverOptions) {
+		o.modelManager = mm
+	}
+}
+
+func WithScheduler(sch *scheduler.Scheduler) ServerOption {
+	return func(o *serverOptions) {
+		o.scheduler = sch
+	}
+}
+
+func WithWorkMsg(wm *queue.TaskQueue) ServerOption {
+	return func(o *serverOptions) {
+		o.msgQueue = wm
+	}
+}
+
+func WithConfig(cfg *config.Config) ServerOption {
+	return func(o *serverOptions) {
+		o.config = cfg
+	}
+}
+
+type server struct {
+	serverHandler *ServerHandler
+	poll          netpoll.EventLoop
+	connMgr       *session.Manager
+	modelManager  *model.ModelManager
+	scheduler     *scheduler.Scheduler
+	msgQueue      *queue.TaskQueue
+	config        *config.Config
+	httpServer    *HTTPServer
+	node          *Node
+}
+
+var _ Server = (*server)(nil)
+
+func NewServer(options ...ServerOption) Server {
+	opts := &serverOptions{
+		config: config.NewDefault(),
+	}
+	for _, opt := range options {
+		opt(opts)
 	}
 
-	s.node.bindServer(s)
+	connMgr := opts.connMgr
+	if connMgr == nil {
+		connMgr = session.NewManager()
+	}
+
+	modelManager := opts.modelManager
+	if modelManager == nil {
+		modelManager = model.DefaultModelManager
+	}
+
+	sch := opts.scheduler
+	if sch == nil {
+		sch = scheduler.NewScheduler()
+	}
+
+	msgQueue := opts.msgQueue
+	if msgQueue == nil {
+		msgQueue = queue.NewTaskQueue()
+	}
+
+	s := &server{
+		connMgr:      connMgr,
+		modelManager: modelManager,
+		scheduler:    sch,
+		msgQueue:     msgQueue,
+		config:       opts.config,
+		node:         newNode(connMgr, modelManager, sch, msgQueue),
+	}
 
 	s.node.SetConnectionFactory(func(addr, id, name string, frontend bool) error {
-		conn := NewClientConn(s)
-		if err := conn.DialConnection(addr); err != nil {
-			return fmt.Errorf("[Server] failed to connect to %s: %w", addr, err)
+		logx.Dbg.Printf("[Server/connectionFactory] connecting to %s (id=%s, name=%s, frontend=%v)", addr, id, name, frontend)
+		conn := NewOutboundPeerConn(s)
+
+		var err error
+		for i := range 3 {
+			if i > 0 {
+				logx.Dbg.Printf("[Server/connectionFactory] retry %d connecting to %s", i, addr)
+				time.Sleep(time.Second)
+			}
+			if err = conn.DialConnection(addr); err != nil {
+				logx.War.Printf("[Server/connectionFactory] dial %s failed (attempt %d): %v", addr, i+1, err)
+				continue
+			}
+			break
 		}
-		sid, _ := strconv.Atoi(id)
-		conn.BindID(int64(sid))
-		return conn.Conn.SendTypePb(packet.Connection, &clusterpb.N2MOnConnection{ID: id, Name: name, Frontend: frontend})
+		if err != nil {
+			return fmt.Errorf("failed to connect to %s after retries: %w", addr, err)
+		}
+		conn.BindID(session.SessionID(id))
+		if err := conn.Conn.SendTypePb(int8(protocol.Handshake), &clusterpb.N2MOnConnection{ID: id, Name: name, Frontend: frontend}); err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("send conn packet to %s: %w", addr, err)
+		}
+		logx.Dbg.Printf("[Server/connectionFactory] Conn packet sent to %s", addr)
+		return nil
 	})
 
 	s.serverHandler = NewServerHandler(s)
@@ -76,11 +159,11 @@ func NewServer() Server {
 
 func (s *server) ModelManager() *model.ModelManager { return s.modelManager }
 
-func (s *server) ConnManager() *connmanager.SessionManager { return s.connManager }
+func (s *server) ConnMgr() *session.Manager { return s.connMgr }
 
 func (s *server) Scheduler() *scheduler.Scheduler { return s.scheduler }
 
-func (s *server) WorkMessage() *processor.MsgQueue { return s.workMessage }
+func (s *server) TaskQueue() *queue.TaskQueue { return s.msgQueue }
 
 func (s *server) ClusterNode() *Node { return s.node }
 
@@ -120,11 +203,11 @@ func (s *server) Run(ctx context.Context) {
 }
 
 func (s *server) Shutdown(ctx context.Context) error {
-	xctx, cancel := context.WithTimeout(ctx, config.Default.ShutdownTimeout)
+	xctx, cancel := context.WithTimeout(ctx, s.config.ShutdownTimeout)
 	defer cancel()
 	s.scheduler.Stop()
 	s.modelManager.Stop()
-	s.connManager.Range(func(s session.Session) error { return s.Close() })
-	s.node.NodeConnManager().Range(func(s session.Session) error { return s.Close() })
+	s.connMgr.Range(func(s session.Session) error { return s.Close() })
+	s.node.PeerMgr().Range(func(s session.Session) error { return s.Close() })
 	return s.poll.Shutdown(xctx)
 }

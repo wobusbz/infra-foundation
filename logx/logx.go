@@ -10,9 +10,28 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 var _BufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+var globalLevel atomic.Int32
+
+func init() {
+	globalLevel.Store(int32(dbgLevel))
+}
+
+func SetLevel(lvl int8) {
+	globalLevel.Store(int32(lvl))
+}
+
+func GetLevel() int8 {
+	return int8(globalLevel.Load())
+}
+
+func IsLevelEnabled(lvl int8) bool {
+	return lvl >= int8(globalLevel.Load())
+}
 
 func InitLogger() {
 	log.SetFlags(log.LstdFlags)
@@ -35,6 +54,9 @@ func formatPrefix(b *bytes.Buffer, level level, file string, line int) {
 }
 
 func output(level level, v ...any) {
+	if int32(level) < globalLevel.Load() {
+		return
+	}
 	b := _BufferPool.Get().(*bytes.Buffer)
 	b.Reset()
 
@@ -51,6 +73,9 @@ func output(level level, v ...any) {
 }
 
 func outputf(level level, format string, v ...any) {
+	if int32(level) < globalLevel.Load() {
+		return
+	}
 	b := _BufferPool.Get().(*bytes.Buffer)
 	b.Reset()
 
@@ -121,6 +146,12 @@ const (
 	fatLevel
 	recLevel
 )
+
+func DbgLevel() int8 { return dbgLevel }
+func InfLevel() int8 { return infLevel }
+func WarLevel() int8 { return warLevel }
+func ErrLevel() int8 { return errLevel }
+func FatLevel() int8 { return fatLevel }
 
 var (
 	Dbg = LoggerLevel{level: dbgLevel}
