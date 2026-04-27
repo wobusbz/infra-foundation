@@ -65,7 +65,6 @@ type Messenger interface {
 	Close() error
 }
 
-// Session 接口定义
 type Session interface {
 	ID() SessionID
 	UID() int64
@@ -117,14 +116,13 @@ func (b *SessionBase) SendTypePb(typ int8, pb message.Message) error {
 }
 
 type SessionEntity struct {
-	id         atomic.Value // SessionID
+	id         atomic.Value
 	uid        atomic.Int64
 	isPeerConn atomic.Bool
 	servers    map[string]string
 	serversrw  sync.RWMutex
 }
 
-// NewSessionEntity 创建新的 SessionEntity
 func NewSessionEntity(id SessionID, uid int64) *SessionEntity {
 	n := &SessionEntity{servers: map[string]string{}}
 	n.uid.Store(uid)
@@ -140,11 +138,11 @@ func (n *SessionEntity) ID() SessionID {
 	return v.(SessionID)
 }
 
-func (n *SessionEntity) UID() int64           { return n.uid.Load() }
-func (n *SessionEntity) BindID(id SessionID)    { n.id.Store(id) }
-func (n *SessionEntity) BindUID(uid int64)      { n.uid.Store(uid) }
-func (n *SessionEntity) IsPeerConn() bool       { return n.isPeerConn.Load() }
-func (n *SessionEntity) SetPeerConn(v bool)     { n.isPeerConn.Store(v) }
+func (n *SessionEntity) UID() int64          { return n.uid.Load() }
+func (n *SessionEntity) BindID(id SessionID) { n.id.Store(id) }
+func (n *SessionEntity) BindUID(uid int64)   { n.uid.Store(uid) }
+func (n *SessionEntity) IsPeerConn() bool    { return n.isPeerConn.Load() }
+func (n *SessionEntity) SetPeerConn(v bool)  { n.isPeerConn.Store(v) }
 
 func (n *SessionEntity) GetServers(name string) string {
 	n.serversrw.RLock()

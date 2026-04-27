@@ -5,24 +5,24 @@ import (
 	"sync"
 )
 
-type Type byte
+type ClusterType byte
 
 const (
-	Heartbeat Type = 0x01 + iota
-	Request
-	Handshake   // Connection
-	Disconnect  // DisConnection
-	BindSession // BindConnection
-	ServiceCall // InternalData
-	Response    // ClientData
-	Push        // NotifyData
-	Invalid
+	ClusterHeartbeat ClusterType = 0x01 + iota
+	ClusterRequest
+	ClusterHandshake   // Connection
+	ClusterDisconnect  // DisConnection
+	ClusterBindSession // BindConnection
+	ClusterServiceCall // InternalData
+	ClusterResponse    // ClientData
+	ClusterPush        // NotifyData
+	ClusterInvalid
 )
 
 var pktPool = sync.Pool{New: func() any { return &Pkt{} }}
 
 type Pkt struct {
-	typ  Type
+	typ  ClusterType
 	id   int32
 	sid  string
 	uid  int64
@@ -30,7 +30,7 @@ type Pkt struct {
 	data []byte
 }
 
-func New(t Type, id int32, data []byte) *Pkt {
+func New(t ClusterType, id int32, data []byte) *Pkt {
 	p := pktPool.Get().(*Pkt)
 	p.typ = t
 	p.id = id
@@ -40,7 +40,7 @@ func New(t Type, id int32, data []byte) *Pkt {
 	return p
 }
 
-func NewWithSID(t Type, id int32, sid string, data []byte) *Pkt {
+func NewWithSID(t ClusterType, id int32, sid string, data []byte) *Pkt {
 	p := pktPool.Get().(*Pkt)
 	p.typ = t
 	p.id = id
@@ -66,7 +66,7 @@ func (p *Pkt) SID() string { return p.sid }
 
 func (p *Pkt) UID() int64 { return p.uid }
 
-func (p *Pkt) Type() Type { return p.typ }
+func (p *Pkt) ClusterType() ClusterType { return p.typ }
 
 func (p *Pkt) Data() []byte { return p.data }
 

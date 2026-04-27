@@ -9,6 +9,7 @@ import (
 	"infra-foundation/pcall"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -31,6 +32,7 @@ type TaskQueue struct {
 	closed        atomic.Bool
 	qnumMask      int64
 	warnThreshold int
+	lastWarn      []atomic.Int64
 }
 
 func NewTaskQueue() *TaskQueue {
@@ -47,6 +49,7 @@ func NewTaskQueue() *TaskQueue {
 		queues:        make([]chan *task, qnum),
 		qnumMask:      qnum - 1,
 		warnThreshold: wt,
+		lastWarn:      make([]atomic.Int64, qnum),
 	}
 	for i := range mq.queues {
 		mq.queues[i] = make(chan *task, config.Default.ReaderQLen)
@@ -78,7 +81,11 @@ func (mq *TaskQueue) Put(id string, fn func()) error {
 	ch := mq.queues[idx]
 	qlen := len(ch)
 	if qlen >= mq.warnThreshold {
-		logx.War.Printf("queue %d full: %d/%d (%.1f%%)", idx, qlen, cap(ch), float64(qlen)*100/float64(cap(ch)))
+		now := time.Now().Unix()
+		if mq.lastWarn[idx].Load() != now {
+			mq.lastWarn[idx].Store(now)
+			logx.War.Printf("queue %d full: %d/%d (%.1f%%)", idx, qlen, cap(ch), float64(qlen)*100/float64(cap(ch)))
+		}
 	}
 
 	t := taskPool.Get().(*task)

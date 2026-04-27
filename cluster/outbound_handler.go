@@ -43,7 +43,7 @@ func (c *OutboundHandler) OnRequest(ctx context.Context, connection netpoll.Conn
 			logx.Err.Printf("[OutboundHandler/OnRequest] Unpack error %v", err)
 			return
 		}
-		if err = c.onMessage(pk.Type(), pk.ID(), pk.SID(), pk.Data()); err != nil {
+		if err = c.onMessage(pk.ClusterType(), pk.ID(), pk.SID(), pk.Data()); err != nil {
 			logx.Err.Println(err)
 		}
 		pk.Free()
@@ -53,29 +53,27 @@ func (c *OutboundHandler) OnRequest(ctx context.Context, connection netpoll.Conn
 	return err
 }
 
-func (c *OutboundHandler) onMessage(typ protocol.Type, id int32, sid string, data []byte) (err error) {
+func (c *OutboundHandler) onMessage(typ protocol.ClusterType, id int32, sid string, data []byte) (err error) {
 	switch typ {
-	case protocol.Handshake:
+	case protocol.ClusterHandshake:
 		var pb = &clusterpb.M2NOnConnection{}
 		if err := pbp.Unmarshal(data, pb); err != nil {
 			return fmt.Errorf("unmarshal connection: %w", err)
 		}
-		c.Node.bindNodeConn(pb.ID, c)
-		c.Node.LoadBalancer().MarkHealthy(pb.ID, true)
-	default:
-		switch typ {
-		case protocol.Disconnect:
-			err = c.ClusterHandler.handleDisconnect(data)
-		case protocol.BindSession:
-			err = c.ClusterHandler.handleBindSession(data)
-		case protocol.ServiceCall:
-			err = c.ClusterHandler.handleServiceCall(id, sid, data)
-		case protocol.Response:
-			c.Conn.Unpack(data)
-			err = c.ClusterHandler.handleResponse(sid, data)
-		case protocol.Push:
-			err = c.ClusterHandler.handlePush(data)
+		if err = c.Node.bindNodeConn(pb.ID, c); err != nil {
+			return fmt.Errorf("bind node connection %s: %w", pb.ID, err)
 		}
+		c.Node.LoadBalancer().MarkHealthy(pb.ID, true)
+	case protocol.ClusterDisconnect:
+		err = c.handleDisconnect(data)
+	case protocol.ClusterBindSession:
+		err = c.handleBindSession(data)
+	case protocol.ClusterServiceCall:
+		err = c.handleServiceCall(id, sid, data)
+	case protocol.ClusterResponse:
+		err = c.handleResponse(sid, id, data)
+	case protocol.ClusterPush:
+		err = c.handlePush(data)
 	}
 
 	if err == nil {

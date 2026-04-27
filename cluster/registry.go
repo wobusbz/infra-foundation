@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"encoding/json"
-	"infra-foundation/logx"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +13,16 @@ type NodeInfo struct {
 	Addr     string
 	Frontend bool
 	Routes   []int32
+}
+
+func (n *NodeInfo) Clone() *NodeInfo {
+	return &NodeInfo{
+		Id:       n.Id,
+		Name:     n.Name,
+		Addr:     n.Addr,
+		Frontend: n.Frontend,
+		Routes:   append([]int32{}, n.Routes...),
+	}
 }
 
 type ServiceRegistry struct {
@@ -28,30 +37,28 @@ func NewServiceRegistry() *ServiceRegistry {
 	return &ServiceRegistry{nodes: make(map[string][]*NodeInfo), idNodes: make(map[string]*NodeInfo), routes: make(map[int32]string)}
 }
 
-func (r *ServiceRegistry) AddNode(nodes *NodeInfo) {
-	name := strings.ToLower(nodes.Name)
+func (r *ServiceRegistry) AddNode(node *NodeInfo) {
 	r.m.Lock()
 	defer r.m.Unlock()
+	r.addNodeLocked(node)
+}
 
-	cloned := &NodeInfo{
-		Id:       nodes.Id,
-		Name:     name,
-		Addr:     nodes.Addr,
-		Frontend: nodes.Frontend,
-		Routes:   append([]int32{}, nodes.Routes...),
-	}
+func (r *ServiceRegistry) addNodeLocked(node *NodeInfo) {
+	name := strings.ToLower(node.Name)
+	cloned := node.Clone()
+	cloned.Name = name
 
 	for i, n := range r.nodes[name] {
-		if n.Id == nodes.Id {
+		if n.Id == node.Id {
 			r.nodes[name][i] = cloned
-			r.idNodes[nodes.Id] = cloned
+			r.idNodes[node.Id] = cloned
 			r.rebuildRoutesLocked(name, cloned.Routes)
 			return
 		}
 	}
 
 	r.nodes[name] = append(r.nodes[name], cloned)
-	r.idNodes[nodes.Id] = cloned
+	r.idNodes[node.Id] = cloned
 
 	r.rebuildRoutesLocked(name, cloned.Routes)
 }
@@ -84,8 +91,11 @@ func (r *ServiceRegistry) GetNodes(name string) []*NodeInfo {
 	r.m.RLock()
 	defer r.m.RUnlock()
 
-	nodes := r.nodes[name]
-	return append([]*NodeInfo{}, nodes...)
+	result := make([]*NodeInfo, 0, len(r.nodes[name]))
+	for _, n := range r.nodes[name] {
+		result = append(result, n.Clone())
+	}
+	return result
 }
 
 func (r *ServiceRegistry) GetServiceByRoute(routeID int32) string {
@@ -106,7 +116,10 @@ func (r *ServiceRegistry) GetNodeByID(id string) (*NodeInfo, bool) {
 	defer r.m.RUnlock()
 
 	node, ok := r.idNodes[id]
-	return node, ok
+	if !ok {
+		return nil, false
+	}
+	return node.Clone(), true
 }
 
 func (r *ServiceRegistry) GetAllNodes() map[string][]*NodeInfo {
@@ -115,7 +128,11 @@ func (r *ServiceRegistry) GetAllNodes() map[string][]*NodeInfo {
 
 	nodesCopy := make(map[string][]*NodeInfo, len(r.nodes))
 	for k, v := range r.nodes {
-		nodesCopy[k] = append([]*NodeInfo{}, v...)
+		svcNodes := make([]*NodeInfo, 0, len(v))
+		for _, n := range v {
+			svcNodes = append(svcNodes, n.Clone())
+		}
+		nodesCopy[k] = svcNodes
 	}
 	return nodesCopy
 }
@@ -129,25 +146,43 @@ func (r *ServiceRegistry) Marshal(name string) (string, error) {
 	return string(rb), nil
 }
 
-func (r *ServiceRegistry) Unmarshal(name string, data []byte) ([]*NodeInfo, error) {
-	name = strings.ToLower(name)
-	var nodes *NodeInfo
-	if err := json.Unmarshal(data, &nodes); err != nil {
-		return nil, err
-	}
+func (r *ServiceRegistry) unmarshalOne(name string, node *NodeInfo) ([]*NodeInfo, error) {
 	r.m.Lock()
-	r.nodes[name] = slices.DeleteFunc(r.nodes[name], func(node *NodeInfo) bool { return node.Addr == nodes.Addr })
+	r.nodes[name] = slices.DeleteFunc(r.nodes[name], func(n *NodeInfo) bool {
+		if n.Addr == node.Addr {
+			delete(r.idNodes, n.Id)
+			return true
+		}
+		return false
+	})
+	r.addNodeLocked(node)
 	r.m.Unlock()
 
-	r.AddNode(nodes)
+	return r.GetNodes(name), nil
+}
 
-	r.routesMu.Lock()
+func (r *ServiceRegistry) Unmarshal(name string, data []byte) ([]*NodeInfo, error) {
+	name = strings.ToLower(name)
 
-	logx.Dbg.Println(string(data))
-	for _, rid := range nodes.Routes {
-		r.routes[rid] = name
+	var single *NodeInfo
+	if err := json.Unmarshal(data, &single); err == nil {
+		if single != nil {
+			return r.unmarshalOne(name, single)
+		}
+		return r.GetNodes(name), nil
 	}
-	r.routesMu.Unlock()
+
+	var arr []*NodeInfo
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return nil, err
+	}
+	for _, node := range arr {
+		if node != nil {
+			if _, err := r.unmarshalOne(name, node); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return r.GetNodes(name), nil
 }
 
@@ -158,6 +193,7 @@ func (r *ServiceRegistry) Size() int {
 }
 
 func (r *ServiceRegistry) HasNode(name, id string) bool {
+	name = strings.ToLower(name)
 	r.m.RLock()
 	defer r.m.RUnlock()
 

@@ -7,6 +7,7 @@ import (
 	"infra-foundation/protocol"
 	"infra-foundation/session"
 	"infra-foundation/transport"
+	"strings"
 	"sync/atomic"
 
 	pbp "google.golang.org/protobuf/proto"
@@ -29,14 +30,13 @@ func sendProtoMessage(
 		return errors.New("[" + name + "/Send] connection closed")
 	}
 	localNode := node.LocalNode()
-	if localNode != nil && localNode.Name == pb.ServiceName() {
-		return conn.SendTypePb(int8(protocol.Request), pb)
+	if localNode != nil && strings.EqualFold(localNode.Name, pb.ServiceName()) {
+		return conn.SendTypePb(int8(protocol.ClusterRequest), pb)
 	}
 	pbdata, err := pbp.Marshal(pb)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	pack := protocol.NewWithSID(protocol.ServiceCall, pb.MessageID(), sid, pbdata)
-	defer pack.Free()
+	pack := protocol.NewWithSID(protocol.ClusterServiceCall, pb.MessageID(), sid, pbdata)
 	return node.RemoteCallWithAgent(sess, conn.Codec, pack, pb.ServiceName())
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"infra-foundation/config"
 	"infra-foundation/logx"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,14 +18,17 @@ import (
 )
 
 type EtcdServiceDiscovery struct {
-	node   *Node
-	client *clientv3.Client
-	ctx    context.Context
-	cancel context.CancelFunc
-	preKey string
-	closed atomic.Bool
-	ttl    int64
-	wg     sync.WaitGroup
+	node       *Node
+	client     *clientv3.Client
+	ctx        context.Context
+	cancel     context.CancelFunc
+	preKey     string
+	closed     atomic.Bool
+	ttl        int64
+	wg         sync.WaitGroup
+	leaseID    clientv3.LeaseID
+	serviceKey string
+	mu         sync.Mutex
 }
 
 func NewEtcdServiceDiscovery(preKey string, addr string, node *Node) (*EtcdServiceDiscovery, error) {
@@ -40,7 +44,7 @@ func NewEtcdServiceDiscovery(preKey string, addr string, node *Node) (*EtcdServi
 		return nil, fmt.Errorf("etcd ping %s: %w", addr, err)
 	}
 	e := &EtcdServiceDiscovery{preKey: preKey, node: node, client: client, ttl: config.Default.EtcdTTL}
-	e.ctx, e.cancel = context.WithCancel(context.TODO())
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 
 	if err = e.list(); err != nil {
 		client.Close()
@@ -56,6 +60,17 @@ func (e *EtcdServiceDiscovery) RegisterService(name, advertiseAddr string, front
 	ctx, cancel := context.WithTimeout(context.Background(), config.Default.EtcdOpTimeout)
 	defer cancel()
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.leaseID != 0 {
+		revokeCtx, revokeCancel := context.WithTimeout(context.Background(), config.Default.EtcdOpTimeout)
+		if _, err := e.client.Revoke(revokeCtx, e.leaseID); err != nil {
+			logx.War.Printf("[EtcdServiceDiscovery/RegisterService] failed to revoke old lease %d: %v", e.leaseID, err)
+		}
+		revokeCancel()
+	}
+
 	logx.Dbg.Printf("[EtcdServiceDiscovery/RegisterService] Requesting lease from etcd, ttl=%d", e.ttl)
 	grsp, err := e.client.Grant(ctx, e.ttl)
 	if err != nil {
@@ -63,7 +78,13 @@ func (e *EtcdServiceDiscovery) RegisterService(name, advertiseAddr string, front
 	}
 
 	id := strconv.Itoa(int(grsp.ID))
-	k := fmt.Sprintf("/%s/%s/%s", strings.Trim(e.preKey, "/"), name, id)
+	preKey := strings.Trim(e.preKey, "/")
+	var k string
+	if preKey == "" {
+		k = fmt.Sprintf("/%s/%s", name, id)
+	} else {
+		k = fmt.Sprintf("/%s/%s/%s", preKey, name, id)
+	}
 	e.node.SetLocalNode(name, id, advertiseAddr, frontend, rids)
 	data, err := json.Marshal(e.node.LocalNode())
 	if err != nil {
@@ -73,6 +94,9 @@ func (e *EtcdServiceDiscovery) RegisterService(name, advertiseAddr string, front
 	if _, err = e.client.Put(e.ctx, k, string(data), clientv3.WithLease(grsp.ID)); err != nil {
 		return fmt.Errorf("etcd put: %w", err)
 	}
+
+	e.leaseID = grsp.ID
+	e.serviceKey = k
 
 	logx.Dbg.Printf("[EtcdServiceDiscovery/RegisterService] Registered - ID: %v Name: %v Addr: %v", grsp.ID, name, advertiseAddr)
 
@@ -113,14 +137,16 @@ func (e *EtcdServiceDiscovery) tryReregister(name, advertiseAddr string, fronten
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
 	for {
+		// 添加 jitter，避免惊群效应
+		jitter := time.Duration(rand.Int63n(int64(backoff)))
 		select {
 		case <-e.ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(backoff + jitter):
 		}
 		logx.Inf.Printf("[EtcdServiceDiscovery/tryReregister] re-registering %s@%s", name, advertiseAddr)
 		if err := e.RegisterService(name, advertiseAddr, frontend, rids); err != nil {
-			logx.Err.Printf("[EtcdServiceDiscovery/tryReregister] failed: %v, retry in %v", err, backoff)
+			logx.Err.Printf("[EtcdServiceDiscovery/tryReregister] failed: %v, retry in %v", err, backoff+jitter)
 			if backoff < maxBackoff {
 				backoff *= 2
 			}
@@ -137,23 +163,31 @@ func (e *EtcdServiceDiscovery) Close() error {
 	}
 	e.cancel()
 	e.wg.Wait()
+	if e.leaseID != 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), config.Default.EtcdOpTimeout)
+		defer cancel()
+		if _, err := e.client.Revoke(ctx, e.leaseID); err != nil {
+			logx.War.Printf("[EtcdServiceDiscovery/Close] failed to revoke lease %d: %v", e.leaseID, err)
+		} else {
+			logx.Inf.Printf("[EtcdServiceDiscovery/Close] lease %d revoked, key %s removed", e.leaseID, e.serviceKey)
+		}
+	}
 	return e.client.Close()
 }
 
 func (e *EtcdServiceDiscovery) parseKey(k []byte) (kname, nid string, err error) {
-	snames := strings.Split(string(k), "/")
-	parts := make([]string, 0, len(snames))
-	for _, s := range snames {
-		if s == "" {
-			continue
-		}
-		parts = append(parts, s)
+	s := string(k)
+	prefix := "/" + strings.Trim(e.preKey, "/")
+	if !strings.HasPrefix(s, prefix) {
+		return "", "", errors.New("key does not match prefix")
 	}
-	if len(parts) != 3 {
-		err = errors.New("Invalid k")
-		return
+	remainder := strings.TrimPrefix(s, prefix)
+	remainder = strings.TrimPrefix(remainder, "/")
+	parts := strings.Split(remainder, "/")
+	if len(parts) != 2 {
+		return "", "", errors.New("invalid key")
 	}
-	return parts[1], parts[2], nil
+	return parts[0], parts[1], nil
 }
 
 func (e *EtcdServiceDiscovery) list() error {

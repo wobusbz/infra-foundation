@@ -82,7 +82,10 @@ func (c *OutboundPeerConn) DialConnection(addr string) error {
 		Messenger:     &clientMessenger{c: c},
 	}
 	c.netpollConn.SetOnRequest(c.request.OnRequest)
-	c.timerID, _ = c.request.Scheduler.PushEvery(c.heartbeatTime, c.sendHeartbeat)
+	c.timerID, err = c.request.Scheduler.PushEvery(c.heartbeatTime, c.sendHeartbeat)
+	if err != nil {
+		logx.Err.Printf("[OutboundPeerConn] failed to start heartbeat timer: %v", err)
+	}
 	logx.Dbg.Printf("[OutboundPeerConn/DialConnection] setup complete for %s, sending Conn packet", addr)
 	return nil
 }
@@ -92,7 +95,7 @@ func (c *OutboundPeerConn) sendHeartbeat() {
 	if c.Conn.HeartbeatAt()+int64(c.heartbeatTime.Seconds()) > now {
 		return
 	}
-	pdata := protocol.New(protocol.Heartbeat, 0, nil)
+	pdata := protocol.New(protocol.ClusterHeartbeat, 0, nil)
 	if err := c.Conn.SendPack(pdata); err != nil {
 		failCount := c.heartbeatFailed.Add(1)
 		logx.War.Printf("[OutboundPeerConn/sendHeartbeat] failed %d times: %v", failCount, err)

@@ -42,7 +42,7 @@ func (m *tcpClientMessenger) Send(pb message.Message) error {
 	if m.t.Conn.IsClosed() {
 		return errors.New("[TCPClient/Send] connection closed")
 	}
-	return m.t.Conn.SendTypePb(int8(protocol.Request), pb)
+	return m.t.Conn.SendTypePb(int8(protocol.ClusterRequest), pb)
 }
 
 func (m *tcpClientMessenger) Notify(targets []session.Session, pb message.Message) error {
@@ -69,7 +69,7 @@ func NewTCPClient() *TCPClient {
 		scheduler:     scheduler.NewScheduler(),
 		heartbeatTime: config.Default.TCPClientHeartbeatInterval,
 	}
-	t.ctx, t.cancel = context.WithCancel(context.TODO())
+	t.ctx, t.cancel = context.WithCancel(context.Background())
 	return t
 }
 
@@ -102,7 +102,7 @@ func (t *TCPClient) Send(pb message.Message) error {
 	if t.Conn.IsClosed() {
 		return errors.New("[TCPClient/Send] connection closed")
 	}
-	return t.Conn.SendTypePb(int8(protocol.Request), pb)
+	return t.Conn.SendTypePb(int8(protocol.ClusterRequest), pb)
 }
 
 func (t *TCPClient) SendTypePb(typ int8, pb message.Message) error {
@@ -150,8 +150,8 @@ func (t *TCPClient) readerLoop() {
 			return
 		}
 		for _, pk := range pks {
-			switch pk.Type() {
-			case protocol.Request, protocol.Response, protocol.Push:
+			switch pk.ClusterType() {
+			case protocol.ClusterRequest, protocol.ClusterResponse, protocol.ClusterPush:
 				t.handlersrw.RLock()
 				pb, ok1 := t.msgs[pk.ID()]
 				hd, ok2 := t.handlers[pk.ID()]
@@ -188,8 +188,7 @@ func (t *TCPClient) sendHeartbeat() {
 	if t.Conn.HeartbeatAt()+int64(t.heartbeatTime.Seconds()) > now {
 		return
 	}
-	pdata := protocol.New(protocol.Heartbeat, 0, nil)
-	defer pdata.Free()
+	pdata := protocol.New(protocol.ClusterHeartbeat, 0, nil)
 	if err := t.Conn.SendPack(pdata); err != nil {
 		t.Conn.Close()
 		return

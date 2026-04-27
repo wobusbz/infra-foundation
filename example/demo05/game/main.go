@@ -43,6 +43,7 @@ func (r *User) OnDisconnection(s session.Session) {
 }
 
 func main() {
+	logx.SetLevel(logx.WarLevel())
 	go func() {
 		pp := os.Getenv("PPROF_PORT")
 		if pp == "" {
@@ -69,7 +70,7 @@ func main() {
 		panic(err)
 	}
 
-	if err := s.Listen(os.Args[2]); err != nil {
+	if err := s.ListenCluster(os.Args[2]); err != nil {
 		panic(err)
 	}
 	s.Run(context.TODO())

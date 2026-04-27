@@ -1,97 +1,84 @@
 package cluster
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"infra-foundation/clusterpb"
-	"infra-foundation/model"
+	"infra-foundation/logx"
+	"infra-foundation/scheduler"
 	"infra-foundation/session"
 
-	"google.golang.org/protobuf/proto"
+	"github.com/cloudwego/netpoll"
 )
 
+type connContextKey struct{}
+
+var connCtxKey connContextKey
+
 type ClusterHandler struct {
-	connMgr      *session.Manager
-	modelManager *model.ModelManager
-	node         *Node
+	*MessageHandler
+	scheduler *scheduler.Scheduler
 }
 
-func NewClusterHandler(connMgr *session.Manager, modelManager *model.ModelManager, node *Node) *ClusterHandler {
-	return &ClusterHandler{
-		connMgr:      connMgr,
-		modelManager: modelManager,
-		node:         node,
-	}
+func NewClusterHandler(svr Server) *ClusterHandler {
+	node := svr.ClusterNode()
+	msgHandler := NewMessageHandler(
+		svr.ConnMgr(),
+		svr.ModelManager(),
+		svr.Scheduler(),
+		svr.TaskQueue(),
+		node,
+	)
+
+	return &ClusterHandler{MessageHandler: msgHandler, scheduler: svr.Scheduler()}
 }
 
-func (h *ClusterHandler) handleDisconnect(data []byte) error {
-	var pb clusterpb.N2MOnSessionClose
-	if err := proto.Unmarshal(data, &pb); err != nil {
-		return fmt.Errorf("unmarshal session close: %w", err)
-	}
-	conn, ok := h.connMgr.GetByID(session.SessionID(pb.SessionID))
+func (s *ClusterHandler) OnPrepare(connection netpoll.Connection) context.Context {
+	sid := session.DefaultIDPool.NextID("sv")
+	remoteAddr := connection.RemoteAddr()
+	localAddr := connection.LocalAddr()
+	logx.Inf.Printf("[ClusterHandler/OnPrepare] new connection from %s to %s, sid=%s", remoteAddr, localAddr, sid)
+	return context.WithValue(context.Background(), connCtxKey, NewInboundPeerConn(s, connection, sid))
+}
+
+func (s *ClusterHandler) OnDisconnect(ctx context.Context, connection netpoll.Connection) {
+	conn, ok := ctx.Value(connCtxKey).(*InboundPeerConn)
 	if !ok {
-		return fmt.Errorf("session %s not found", pb.SessionID)
+		logx.War.Printf("[ClusterHandler/OnDisconnect] connection from %s, no conn in context (closed before OnPrepare?)", connection.RemoteAddr())
+		return
 	}
-	return conn.Close()
+	logx.Inf.Printf("[ClusterHandler/OnDisconnect] connection closed from %s, sid=%s", connection.RemoteAddr(), conn.ID())
+	conn.Close()
+	s.Node.broadcastSessionClose(conn)
 }
 
-func (h *ClusterHandler) handleBindSession(data []byte) error {
-	var pb clusterpb.N2MOnSessionBindServer
-	if err := proto.Unmarshal(data, &pb); err != nil {
-		return fmt.Errorf("unmarshal bind connection: %w", err)
-	}
-	conn, ok := h.connMgr.GetByID(session.SessionID(pb.SessionID))
+func (s *ClusterHandler) OnRequest(ctx context.Context, connection netpoll.Connection) error {
+	sconn, ok := ctx.Value(connCtxKey).(*InboundPeerConn)
 	if !ok {
-		conn = NewProxySession(session.NewSessionEntity(session.SessionID(pb.SessionID), pb.UID), h.node, h.modelManager, h.connMgr, h.node.PeerMgr())
-		h.connMgr.Store(conn)
+		logx.Err.Println("[ClusterHandler/OnRequest] get conn from context failed")
+		return fmt.Errorf("get conn from context failed")
 	}
-	for name, id := range pb.GetServers() {
-		conn.BindServers(name, id)
+	r2, err := sconn.Conn.Codec.NextPacket(connection.Reader())
+	if err != nil {
+		logx.Err.Printf("[ClusterHandler/OnRequest] NextPacket error %v", err)
+		return fmt.Errorf("next packet: %w", err)
 	}
-	return nil
-}
-
-func (h *ClusterHandler) handleServiceCall(id int32, sid string, data []byte) error {
-	if !h.modelManager.IsLocalHandler(id) {
-		return fmt.Errorf("message %d not found", id)
+	if r2 == nil {
+		return nil
 	}
-	conn, ok := h.connMgr.GetByID(session.SessionID(sid))
-	if !ok {
-		return fmt.Errorf("session %s not found", sid)
-	}
-	return h.modelManager.Dispatch(conn, id, data)
-}
-
-func (h *ClusterHandler) handleResponse(sid string, data []byte) error {
-	conn, ok := h.connMgr.GetByID(session.SessionID(sid))
-	if !ok {
-		return fmt.Errorf("session %s not found", sid)
-	}
-	return conn.SendData(data)
-}
-
-func (h *ClusterHandler) handlePush(data []byte) error {
-	var pb clusterpb.N2MNotify
-	if err := proto.Unmarshal(data, &pb); err != nil {
-		return fmt.Errorf("unmarshal notify: %w", err)
-	}
-
-	if len(pb.SessionID) == 0 {
-		return h.connMgr.Range(func(s session.Session) error { return s.SendData(pb.Plyload) })
-	}
-
-	var errs []error
-	for _, sid := range pb.SessionID {
-		conn, ok := h.connMgr.GetByID(session.SessionID(sid))
-		if !ok {
-			errs = append(errs, fmt.Errorf("session %s not found", sid))
-			continue
+	if err = s.TaskQueue.Put(string(sconn.ID()), func() {
+		pk, err := sconn.Conn.Codec.Unpack1(r2)
+		if err != nil {
+			logx.Err.Printf("[ClusterHandler/OnRequest] Unpack error %v", err)
+			return
 		}
-		errs = append(errs, conn.SendData(pb.Plyload))
-	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("notify: %w", err)
+		if err = s.OnMessage(sconn, sconn.Conn.Codec, pk.ClusterType(), pk.ID(), pk.SID(), pk.Data()); err != nil {
+			logx.Err.Println(err)
+		}
+		pk.Free()
+	}); err != nil {
+		logx.War.Printf("[ClusterHandler/OnRequest] overload, closing conn %s: %v", sconn.ID(), err)
+		sconn.Close()
+		return err
 	}
 	return nil
 }

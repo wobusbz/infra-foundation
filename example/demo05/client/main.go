@@ -15,7 +15,7 @@ import (
 var sendCount uint64
 
 func main() {
-	const connNum = 1000
+	const connNum = 1
 	const msgNum = 10000
 	var connCount atomic.Int64
 
@@ -43,12 +43,12 @@ func main() {
 
 	for range connNum {
 		wg.Go(func() {
-			c := transport.NewTCPClient()
+			c := transport.NewClientTCP()
 			if err := c.Dial(os.Args[1]); err != nil {
 				panic(err)
 			}
 			connCount.Add(1)
-			c.RegisterHandler(&protos.S2CLogin{}, func(cc *transport.TCPClient, pb message.Message) {})
+			c.RegisterHandler(&protos.S2CLogin{}, func(cc *transport.ClientTCP, pb message.Message) { logx.Dbg.Println(pb) })
 			for range msgNum {
 				select {
 				case <-exitC:

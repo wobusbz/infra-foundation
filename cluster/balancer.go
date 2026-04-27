@@ -57,7 +57,9 @@ func (lb *LoadBalancer) Pick(serviceName string) (*NodeInfo, error) {
 		return nil, fmt.Errorf("no available nodes for service: %s", serviceName)
 	}
 
+	lb.mu.Lock()
 	idx := lb.rnd.Intn(len(healthyNodes))
+	lb.mu.Unlock()
 	return healthyNodes[idx], nil
 }
 
@@ -86,7 +88,9 @@ func (lb *LoadBalancer) PickFrontend(serviceName string) (*NodeInfo, error) {
 		return nil, fmt.Errorf("no frontend nodes for service: %s", serviceName)
 	}
 
+	lb.mu.Lock()
 	idx := lb.rnd.Intn(len(frontendNodes))
+	lb.mu.Unlock()
 	return frontendNodes[idx], nil
 }
 

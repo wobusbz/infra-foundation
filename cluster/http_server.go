@@ -35,9 +35,12 @@ func (h *HTTPServer) Listen(addr string) {
 	}()
 }
 
-func (h *HTTPServer) Shutdown(ctx context.Context) {
+func (h *HTTPServer) Shutdown(ctx context.Context) error {
 	if h.httpServer == nil {
-		return
+		return nil
 	}
-	h.httpServer.Shutdown(ctx)
+	if err := h.httpServer.Shutdown(ctx); err != nil {
+		return err
+	}
+	return nil
 }

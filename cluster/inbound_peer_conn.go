@@ -19,7 +19,7 @@ var _ session.Session = (*InboundPeerConn)(nil)
 type InboundPeerConn struct {
 	*session.SessionBase
 	Conn              *transport.Conn
-	request           *ServerHandler
+	request           *ClusterHandler
 	heartbeatInterval time.Duration
 	timerID           scheduler.TimerID
 	closed            atomic.Bool
@@ -65,7 +65,7 @@ func (m *inboundMessenger) Close() error {
 	return m.n.Conn.Close()
 }
 
-func NewInboundPeerConn(svrHandler *ServerHandler, connection netpoll.Connection, id session.SessionID) *InboundPeerConn {
+func NewInboundPeerConn(svrHandler *ClusterHandler, connection netpoll.Connection, id session.SessionID) *InboundPeerConn {
 	n := &InboundPeerConn{
 		request:           svrHandler,
 		heartbeatInterval: config.Default.NetPollHeartbeatInterval,
@@ -77,7 +77,11 @@ func NewInboundPeerConn(svrHandler *ServerHandler, connection netpoll.Connection
 	n.Conn = transport.NewConn(connection, id, -1)
 
 	n.request.ConnMgr.Store(n)
-	n.timerID, _ = n.request.Scheduler.PushEvery(n.heartbeatInterval, n.checkHeartbeat)
+	var err error
+	n.timerID, err = n.request.Scheduler.PushEvery(n.heartbeatInterval, n.checkHeartbeat)
+	if err != nil {
+		logx.Err.Printf("[InboundPeerConn] failed to start heartbeat timer: %v", err)
+	}
 	return n
 }
 
@@ -89,7 +93,7 @@ func (n *InboundPeerConn) checkHeartbeat() {
 		return
 	}
 
-	if n.Conn.HeartbeatAt()+int64(n.heartbeatInterval.Seconds()*2) > now {
+	if n.Conn.HeartbeatAt()+int64((n.heartbeatInterval*2)/time.Second) > now {
 		n.heartbeatTimeout.Store(0)
 		return
 	}

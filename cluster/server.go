@@ -26,7 +26,8 @@ type Server interface {
 	Scheduler() *scheduler.Scheduler
 	TaskQueue() *queue.TaskQueue
 	ClusterNode() *Node
-	Listen(addr string) error
+	ListenClient(addr string) error
+	ListenCluster(addr string) error
 	ListenWeb(addr string)
 	Run(ctx context.Context)
 	Shutdown(ctx context.Context) error
@@ -73,15 +74,17 @@ func WithConfig(cfg *config.Config) ServerOption {
 }
 
 type server struct {
-	serverHandler *ServerHandler
-	poll          netpoll.EventLoop
-	connMgr       *session.Manager
-	modelManager  *model.ModelManager
-	scheduler     *scheduler.Scheduler
-	msgQueue      *queue.TaskQueue
-	config        *config.Config
-	httpServer    *HTTPServer
-	node          *Node
+	clientHandler  *ClientHandler
+	clusterHandler *ClusterHandler
+	clientPoll     netpoll.EventLoop
+	clusterPoll    netpoll.EventLoop
+	connMgr        *session.Manager
+	modelManager   *model.ModelManager
+	scheduler      *scheduler.Scheduler
+	msgQueue       *queue.TaskQueue
+	config         *config.Config
+	httpServer     *HTTPServer
+	node           *Node
 }
 
 var _ Server = (*server)(nil)
@@ -143,7 +146,7 @@ func NewServer(options ...ServerOption) Server {
 			return fmt.Errorf("failed to connect to %s after retries: %w", addr, err)
 		}
 		conn.BindID(session.SessionID(id))
-		if err := conn.Conn.SendTypePb(int8(protocol.Handshake), &clusterpb.N2MOnConnection{ID: id, Name: name, Frontend: frontend}); err != nil {
+		if err := conn.Conn.SendTypePb(int8(protocol.ClusterHandshake), &clusterpb.N2MOnConnection{ID: id, Name: name, Frontend: frontend}); err != nil {
 			_ = conn.Close()
 			return fmt.Errorf("send conn packet to %s: %w", addr, err)
 		}
@@ -151,7 +154,8 @@ func NewServer(options ...ServerOption) Server {
 		return nil
 	})
 
-	s.serverHandler = NewServerHandler(s)
+	s.clientHandler = NewClientHandler(s)
+	s.clusterHandler = NewClusterHandler(s)
 	s.httpServer = &HTTPServer{modelManager: s.modelManager}
 
 	return s
@@ -167,26 +171,48 @@ func (s *server) TaskQueue() *queue.TaskQueue { return s.msgQueue }
 
 func (s *server) ClusterNode() *Node { return s.node }
 
-func (s *server) Listen(addr string) error {
-	logx.Inf.Printf("[START] TCP Server listener at Addr: %s is starting", addr)
+func (s *server) ListenClient(addr string) error {
+	logx.Inf.Printf("[START] Client TCP listener at Addr: %s is starting", addr)
 	ln, err := netpoll.CreateListener("tcp", addr)
 	if err != nil {
 		return err
 	}
-	s.poll, err = netpoll.NewEventLoop(
-		s.serverHandler.OnRequest,
-		netpoll.WithOnPrepare(s.serverHandler.OnPrepare),
-		netpoll.WithOnDisconnect(s.serverHandler.OnDisconnect),
+	s.clientPoll, err = netpoll.NewEventLoop(
+		s.clientHandler.OnRequest,
+		netpoll.WithOnPrepare(s.clientHandler.OnPrepare),
+		netpoll.WithOnDisconnect(s.clientHandler.OnDisconnect),
 	)
 	if err != nil {
 		return err
 	}
 	go func() {
-		if err = s.poll.Serve(ln); err != nil {
+		if err = s.clientPoll.Serve(ln); err != nil {
 			panic(err)
 		}
 	}()
-	return err
+	return nil
+}
+
+func (s *server) ListenCluster(addr string) error {
+	logx.Inf.Printf("[START] Cluster TCP listener at Addr: %s is starting", addr)
+	ln, err := netpoll.CreateListener("tcp", addr)
+	if err != nil {
+		return err
+	}
+	s.clusterPoll, err = netpoll.NewEventLoop(
+		s.clusterHandler.OnRequest,
+		netpoll.WithOnPrepare(s.clusterHandler.OnPrepare),
+		netpoll.WithOnDisconnect(s.clusterHandler.OnDisconnect),
+	)
+	if err != nil {
+		return err
+	}
+	go func() {
+		if err = s.clusterPoll.Serve(ln); err != nil {
+			panic(err)
+		}
+	}()
+	return nil
 }
 
 func (s *server) ListenWeb(addr string) {
@@ -198,8 +224,12 @@ func (s *server) Run(ctx context.Context) {
 	cg := make(chan os.Signal, 1)
 	signal.Notify(cg, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 	<-cg
-	_ = s.Shutdown(ctx)
-	s.httpServer.Shutdown(ctx)
+	if err := s.Shutdown(ctx); err != nil {
+		logx.Err.Printf("[Server/Run] shutdown error: %v", err)
+	}
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		logx.Err.Printf("[Server/Run] http shutdown error: %v", err)
+	}
 }
 
 func (s *server) Shutdown(ctx context.Context) error {
@@ -209,5 +239,11 @@ func (s *server) Shutdown(ctx context.Context) error {
 	s.modelManager.Stop()
 	s.connMgr.Range(func(s session.Session) error { return s.Close() })
 	s.node.PeerMgr().Range(func(s session.Session) error { return s.Close() })
-	return s.poll.Shutdown(xctx)
+	if s.clusterPoll != nil {
+		_ = s.clusterPoll.Shutdown(xctx)
+	}
+	if s.clientPoll != nil {
+		_ = s.clientPoll.Shutdown(xctx)
+	}
+	return nil
 }

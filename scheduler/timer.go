@@ -227,6 +227,12 @@ func (t *TimerWheel) advance() {
 	t.current.Store(int64((slotIdx + 1) % t.slotNum))
 
 	if len(expired) > 0 {
+		type reschedule struct {
+			timer *Timer
+			id    TimerID
+		}
+		var toReschedule []reschedule
+
 		t.indexMu.Lock()
 		for _, et := range expired {
 			if et.recurring {
@@ -243,17 +249,23 @@ func (t *TimerWheel) advance() {
 				et.timer.next = nil
 				et.timer.list = nil
 
-				ns := t.slots[newSlotIdx]
-				ns.mu.Lock()
-				ns.list.PushBack(et.timer)
-				ns.mu.Unlock()
-
-				t.index[et.id] = et.timer
+				toReschedule = append(toReschedule, reschedule{timer: et.timer, id: et.id})
 			} else {
 				delete(t.index, et.id)
 			}
 		}
 		t.indexMu.Unlock()
+
+		for _, rs := range toReschedule {
+			ns := t.slots[rs.timer.slot]
+			ns.mu.Lock()
+			ns.list.PushBack(rs.timer)
+			ns.mu.Unlock()
+
+			t.indexMu.Lock()
+			t.index[rs.id] = rs.timer
+			t.indexMu.Unlock()
+		}
 
 		for _, et := range expired {
 			if !et.recurring {

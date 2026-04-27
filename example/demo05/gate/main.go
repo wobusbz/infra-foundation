@@ -11,6 +11,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,6 +34,7 @@ func (u *User) OnDisconnection(s session.Session) {
 }
 
 func main() {
+	logx.SetLevel(logx.WarLevel())
 	go func() {
 		http.ListenAndServe("0.0.0.0:9009", nil)
 	}()
@@ -44,10 +46,16 @@ func main() {
 		panic(err)
 	}
 	defer discovery.Close()
-	if err := discovery.RegisterService(os.Args[1], fmt.Sprintf("%s:%s", localAddr, strings.Split(os.Args[2], ":")[1]), true, model.GetLocalHandlerIDs()); err != nil {
+	clientPortStr := strings.Split(os.Args[2], ":")[1]
+	clientPortNum, _ := strconv.Atoi(clientPortStr)
+	clusterPortStr := strconv.Itoa(clientPortNum + 1000)
+	if err := discovery.RegisterService(os.Args[1], fmt.Sprintf("%s:%s", localAddr, clusterPortStr), true, model.GetLocalHandlerIDs()); err != nil {
 		panic(err)
 	}
-	if err := s.Listen(os.Args[2]); err != nil {
+	if err := s.ListenClient(os.Args[2]); err != nil {
+		panic(err)
+	}
+	if err := s.ListenCluster(":" + clusterPortStr); err != nil {
 		panic(err)
 	}
 	s.Run(context.TODO())

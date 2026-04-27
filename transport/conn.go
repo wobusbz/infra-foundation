@@ -66,7 +66,7 @@ func (c *Conn) Send(pb message.Message) error {
 	if c.IsClosed() {
 		return errors.New("[transport.Conn/Send] connection closed")
 	}
-	return c.SendTypePb(int8(protocol.Request), pb)
+	return c.SendTypePb(int8(protocol.ClusterRequest), pb)
 }
 
 func (c *Conn) SendTypePb(typ int8, msg message.Message) error {
@@ -77,8 +77,7 @@ func (c *Conn) SendTypePb(typ int8, msg message.Message) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	pdata := protocol.New(protocol.Type(typ), msg.MessageID(), data)
-	defer pdata.Free()
+	pdata := protocol.New(protocol.ClusterType(typ), msg.MessageID(), data)
 	return c.SendPack(pdata)
 }
 
@@ -88,8 +87,13 @@ func (c *Conn) SendData(data []byte) error {
 	}
 	switch c.writeQueueMode {
 	case config.WriteQueueModeBlock:
-		c.writeQ <- data
-		return nil
+		select {
+		case c.writeQ <- data:
+			return nil
+		case <-time.After(c.writeQueueTimeout):
+			metric.CounterOf("transport_write_queue_timeout").Inc()
+			return errors.New("send data: write queue timeout")
+		}
 	case config.WriteQueueModeBlockWithTimeout:
 		select {
 		case c.writeQ <- data:
@@ -114,7 +118,7 @@ func (c *Conn) SendPack(pack *protocol.Pkt) error {
 		pack.Free()
 		return errors.New("[transport.Conn/SendPack] connection closed")
 	}
-	data, err := c.Codec.Pack(pack.Type(), pack.ID(), string(c.ID()), pack.Data())
+	data, err := c.Codec.Pack(pack.ClusterType(), pack.ID(), string(c.ID()), pack.Data())
 	pack.Free()
 	if err != nil {
 		return fmt.Errorf("pack: %w", err)
@@ -154,7 +158,14 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) writeLoop() {
-	for buf := range c.writeQ {
+	const maxBatch = 16
+	const maxBatchBytes = 64 * 1024
+
+	for {
+		buf, ok := <-c.writeQ
+		if !ok {
+			return
+		}
 		if len(buf) == 0 {
 			protocol.PutBuf(buf)
 			continue
@@ -163,14 +174,63 @@ func (c *Conn) writeLoop() {
 			protocol.PutBuf(buf)
 			continue
 		}
-		_, err := c.wc.Write(buf)
-		protocol.PutBuf(buf)
-		if err != nil {
-			logx.Err.Println(err)
-			return
+
+		totalLen := len(buf)
+		batch := make([][]byte, 1, maxBatch)
+		batch[0] = buf
+
+		for len(batch) < maxBatch && totalLen < maxBatchBytes {
+			select {
+			case next, ok := <-c.writeQ:
+				if !ok {
+					goto flush
+				}
+				if len(next) == 0 {
+					protocol.PutBuf(next)
+					continue
+				}
+				if c.IsClosed() {
+					protocol.PutBuf(next)
+					continue
+				}
+				batch = append(batch, next)
+				totalLen += len(next)
+			default:
+				goto flush
+			}
 		}
-		metric.CounterOf("transport_packets_sent_total").Inc()
-		metric.CounterOf("transport_bytes_sent_total").Add(uint64(len(buf)))
+
+	flush:
+		metric.CounterOf("transport_write_batches").Inc()
+		metric.HistogramOf("transport_write_batch_size").Observe(float64(len(batch)))
+
+		if len(batch) == 1 {
+			_, err := c.wc.Write(batch[0])
+			protocol.PutBuf(batch[0])
+			if err != nil {
+				logx.Err.Println(err)
+				return
+			}
+			metric.CounterOf("transport_packets_sent_total").Inc()
+			metric.CounterOf("transport_bytes_sent_total").Add(uint64(len(batch[0])))
+		} else {
+			merged := protocol.GetBuf(totalLen)
+			off := 0
+			for _, b := range batch {
+				copy(merged[off:], b)
+				off += len(b)
+				protocol.PutBuf(b)
+			}
+			_, err := c.wc.Write(merged[:off])
+			if err != nil {
+				protocol.PutBuf(merged)
+				logx.Err.Println(err)
+				return
+			}
+			metric.CounterOf("transport_packets_sent_total").Add(uint64(len(batch)))
+			metric.CounterOf("transport_bytes_sent_total").Add(uint64(off))
+			protocol.PutBuf(merged)
+		}
 		c.RefreshHeartbeat()
 	}
 }

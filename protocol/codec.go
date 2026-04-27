@@ -38,7 +38,7 @@ func init() {
 	}
 }
 
-func getBuf(size int) []byte {
+func GetBuf(size int) []byte {
 	switch {
 	case size <= 256:
 		p := bufPools[0].Get().(*[]byte)
@@ -88,8 +88,8 @@ func NewCodec() *Codec {
 	return &Codec{buf: bytes.NewBuffer(nil)}
 }
 
-func (c *Codec) Pack(t Type, id int32, sid string, payload []byte) ([]byte, error) {
-	if t < Heartbeat || t >= Invalid {
+func (c *Codec) Pack(t ClusterType, id int32, sid string, payload []byte) ([]byte, error) {
+	if t < ClusterHeartbeat || t >= ClusterInvalid {
 		return nil, ErrWrongType
 	}
 
@@ -100,7 +100,7 @@ func (c *Codec) Pack(t Type, id int32, sid string, payload []byte) ([]byte, erro
 	total := HdrLen + 2 + sidLen
 	total += int(payloadLen)
 
-	buf := getBuf(total)
+	buf := GetBuf(total)
 
 	off := 0
 	binary.BigEndian.PutUint16(buf[off:off+2], config.Default.ProtocolMagic)
@@ -163,8 +163,8 @@ func (c *Codec) NextPacket(r netpoll.Reader) (netpoll.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := Type(btyp[7])
-	if t < Heartbeat || t >= Invalid {
+	t := ClusterType(btyp[7])
+	if t < ClusterHeartbeat || t >= ClusterInvalid {
 		return nil, ErrWrongType
 	}
 	return r.Slice(pktLen)
@@ -202,7 +202,7 @@ func (c *Codec) Unpack1(r netpoll.Reader) (*Pkt, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := Type(btyp[0])
+	t := ClusterType(btyp[0])
 	off += 1
 
 	bId, err := r.Next(4)
@@ -288,8 +288,8 @@ func (c *Codec) Unpack(data []byte) ([]*Pkt, error) {
 			return pkts, ErrPktTooLarge
 		}
 
-		t := Type(b[7])
-		if t < Heartbeat || t >= Invalid {
+		t := ClusterType(b[7])
+		if t < ClusterHeartbeat || t >= ClusterInvalid {
 			return pkts, ErrWrongType
 		}
 
@@ -322,7 +322,7 @@ func (c *Codec) Unpack(data []byte) ([]*Pkt, error) {
 
 		var pkt *Pkt
 		switch t {
-		case ServiceCall, Response:
+		case ClusterServiceCall, ClusterResponse:
 			pkt = NewWithSID(t, id, sid, payload)
 		default:
 			pkt = New(t, id, payload)
@@ -330,5 +330,10 @@ func (c *Codec) Unpack(data []byte) ([]*Pkt, error) {
 		pkts = append(pkts, pkt)
 	}
 
+	if c.buf.Len() > 0 {
+		c.buf = bytes.NewBuffer(c.buf.Bytes())
+	} else {
+		c.buf.Reset()
+	}
 	return pkts, nil
 }

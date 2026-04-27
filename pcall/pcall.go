@@ -38,7 +38,10 @@ func Pcall1(method reflect.Method, args []reflect.Value) (err error) {
 		if !r[0].IsValid() || (r[0].Kind() == reflect.Pointer || r[0].Kind() == reflect.Interface) && r[0].IsNil() {
 			return nil
 		}
-		return r[0].Interface().(error)
+		if err, ok := r[0].Interface().(error); ok {
+			return err
+		}
+		return fmt.Errorf("unexpected return type %T, expected error", r[0].Interface())
 	}
 	return nil
 }
@@ -79,7 +82,10 @@ func PcallN(method reflect.Method, args []reflect.Value) (resurt []reflect.Value
 		if !xerrs.IsValid() || (xerrs.Kind() == reflect.Pointer || xerrs.Kind() == reflect.Interface) && xerrs.IsNil() {
 			return r[:len(r)-1], nil
 		}
-		return nil, xerrs.Interface().(error)
+		if err, ok := xerrs.Interface().(error); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unexpected return type %T, expected error", xerrs.Interface())
 	}
 	return nil, nil
 }

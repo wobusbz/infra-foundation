@@ -39,7 +39,7 @@ func (sb *SessionBinder) BindSessionToNode(sess session.Session, node *NodeInfo)
 		Servers:   sess.Servers(),
 	}
 
-	return conn.SendTypePb(int8(protocol.BindSession), pb)
+	return conn.SendTypePb(int8(protocol.ClusterBindSession), pb)
 }
 
 func (sb *SessionBinder) GetNodeConnection(nodeID string) (session.Session, bool) {
@@ -47,6 +47,9 @@ func (sb *SessionBinder) GetNodeConnection(nodeID string) (session.Session, bool
 }
 
 func (sb *SessionBinder) StoreNodeConnection(nodeID string, conn session.Session) error {
+	if conn == nil {
+		return fmt.Errorf("cannot store nil connection for node %s", nodeID)
+	}
 	conn.BindID(session.SessionID(nodeID))
 	conn.BindUID(-1)
 	if se, ok := conn.(interface{ SetPeerConn(bool) }); ok {
