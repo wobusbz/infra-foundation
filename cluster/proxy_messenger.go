@@ -31,11 +31,6 @@ func (m *proxyMessenger) Notify(targets []session.Session, pb message.Message) e
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	buf, err := m.p.Codec.Pack(protocol.ClusterRequest, pb.MessageID(), string(m.p.ID()), pdata)
-	if err != nil {
-		return fmt.Errorf("pack: %w", err)
-	}
-
 	tempSession := make(map[string][]string)
 
 	if len(targets) == 0 {
@@ -63,7 +58,8 @@ func (m *proxyMessenger) Notify(targets []session.Session, pb message.Message) e
 	var errs []error
 	for gatewayID, sessionIDs := range tempSession {
 		notifyPB.SessionID = sessionIDs
-		notifyPB.Plyload = buf
+		notifyPB.Plyload = pdata
+		notifyPB.MsgID = pb.MessageID()
 
 		notifyDataBuf, err := pbp.Marshal(notifyPB)
 		if err != nil {

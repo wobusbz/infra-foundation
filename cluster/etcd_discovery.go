@@ -137,7 +137,6 @@ func (e *EtcdServiceDiscovery) tryReregister(name, advertiseAddr string, fronten
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
 	for {
-		// 添加 jitter，避免惊群效应
 		jitter := time.Duration(rand.Int63n(int64(backoff)))
 		select {
 		case <-e.ctx.Done():

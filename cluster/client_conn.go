@@ -39,24 +39,6 @@ func (c *ClientConn) SendData(data []byte) error {
 	if c.closed.Load() {
 		return errors.New("[ClientConn/SendData] connection closed")
 	}
-	if len(data) >= 2 && data[0] == 0xAB && data[1] == 0xCD {
-		pks, err := c.Conn.Codec.Unpack(data)
-		if err != nil {
-			for _, p := range pks {
-				p.Free()
-			}
-			return err
-		}
-		if len(pks) > 0 {
-			pk := pks[0]
-			pack := c.clientProtocol.Pack(pk.ID(), pk.Data())
-			pk.Free()
-			for _, p := range pks[1:] {
-				p.Free()
-			}
-			return c.Conn.SendData(pack)
-		}
-	}
 	return c.Conn.SendData(data)
 }
 

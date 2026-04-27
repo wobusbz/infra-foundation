@@ -30,3 +30,9 @@ message /*4*/ N2MOnSessionBindServer {
 message /*5*/ N2MOnSessionClose {
     string                      SessionID                   = 1;
 }
+
+message /*6*/ N2MNotify {
+    repeated string             SessionID                   = 1;
+    bytes                       Plyload                     = 2;
+    int32                       MsgID                       = 3;
+}

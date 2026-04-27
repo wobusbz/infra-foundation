@@ -20,9 +20,7 @@ func (x *N2MOnSessionClose) MessageID() int32         { return 5 }
 func (x *N2MOnSessionClose) MessageName() string      { return "N2MOnSessionClose" }
 func (x *N2MOnSessionClose) ServiceName() string         { return "" }
 func (x *N2MOnSessionClose) ModelName() string         { return "" }
-
-
-
-
-
-
+func (x *N2MNotify) MessageID() int32                 { return 6 }
+func (x *N2MNotify) MessageName() string              { return "N2MNotify" }
+func (x *N2MNotify) ServiceName() string                 { return "" }
+func (x *N2MNotify) ModelName() string                 { return "" }

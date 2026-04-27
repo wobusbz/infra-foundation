@@ -7,12 +7,11 @@
 package clusterpb
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -310,6 +309,7 @@ type N2MNotify struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionID     []string               `protobuf:"bytes,1,rep,name=SessionID,proto3" json:"SessionID,omitempty"`
 	Plyload       []byte                 `protobuf:"bytes,2,opt,name=Plyload,proto3" json:"Plyload,omitempty"`
+	MsgID         int32                  `protobuf:"varint,3,opt,name=MsgID,proto3" json:"MsgID,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -358,6 +358,13 @@ func (x *N2MNotify) GetPlyload() []byte {
 	return nil
 }
 
+func (x *N2MNotify) GetMsgID() int32 {
+	if x != nil {
+		return x.MsgID
+	}
+	return 0
+}
+
 var File_cluster_proto protoreflect.FileDescriptor
 
 const file_cluster_proto_rawDesc = "" +
@@ -383,10 +390,11 @@ const file_cluster_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"1\n" +
 	"\x11N2MOnSessionClose\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x01(\tR\tSessionID\"C\n" +
+	"\tSessionID\x18\x01 \x01(\tR\tSessionID\"Y\n" +
 	"\tN2MNotify\x12\x1c\n" +
 	"\tSessionID\x18\x01 \x03(\tR\tSessionID\x12\x18\n" +
-	"\aPlyload\x18\x02 \x01(\fR\aPlyloadB\fZ\n" +
+	"\aPlyload\x18\x02 \x01(\fR\aPlyload\x12\x14\n" +
+	"\x05MsgID\x18\x03 \x01(\x05R\x05MsgIDB\fZ\n" +
 	"./;clusterb\x06proto3"
 
 var (
@@ -443,9 +451,3 @@ func file_cluster_proto_init() {
 	file_cluster_proto_goTypes = nil
 	file_cluster_proto_depIdxs = nil
 }
-
-
-
-
-
-

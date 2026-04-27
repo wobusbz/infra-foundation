@@ -133,8 +133,6 @@ func (h *MessageHandler) handleResponse(sid string, id int32, data []byte) error
 		return fmt.Errorf("session %s not found", sid)
 	}
 	if cc, ok := conn.(*ClientConn); ok {
-		// Use pooled packing to avoid heap allocation in the hot path.
-		// The pooled buffer will be recycled by transport.Conn.writeLoop.
 		if codec, ok := cc.clientProtocol.(*protocol.ClientCodec); ok {
 			pack := codec.PackPooled(id, data)
 			return cc.Conn.SendData(pack)
@@ -152,7 +150,7 @@ func (h *MessageHandler) handlePush(data []byte) error {
 	}
 
 	if len(pb.SessionID) == 0 {
-		return h.ConnMgr.Range(func(s session.Session) error { return s.SendData(pb.Plyload) })
+		return h.ConnMgr.Range(func(s session.Session) error { return h.sendPushToSession(s, pb.MsgID, pb.Plyload) })
 	}
 
 	var errs []error
@@ -162,10 +160,18 @@ func (h *MessageHandler) handlePush(data []byte) error {
 			errs = append(errs, fmt.Errorf("session %s not found", sid))
 			continue
 		}
-		errs = append(errs, conn.SendData(pb.Plyload))
+		errs = append(errs, h.sendPushToSession(conn, pb.MsgID, pb.Plyload))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}
 	return nil
+}
+
+func (h *MessageHandler) sendPushToSession(conn session.Session, msgID int32, payload []byte) error {
+	if cc, ok := conn.(*ClientConn); ok {
+		pack := cc.clientProtocol.Pack(msgID, payload)
+		return cc.Conn.SendData(pack)
+	}
+	return conn.SendData(payload)
 }

@@ -15,10 +15,6 @@ type MessageRouter struct {
 }
 
 func (mr *MessageRouter) nodeBySession(s session.Session, name string) (session.Session, error) {
-	nodeID := s.GetServers(name)
-	if nodeID == "" {
-		return mr.selectNode(name, s)
-	}
 	return mr.sessionBinder.GetNodeByName(s, name)
 }
 
