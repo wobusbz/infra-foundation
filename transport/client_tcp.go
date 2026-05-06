@@ -29,6 +29,8 @@ type ClientTCP struct {
 	clientProtocol protocol.ClientProtocol
 	closed         bool
 	mu             sync.Mutex
+	pendingCalls   map[int32]chan message.Message
+	pendingMu      sync.Mutex
 }
 
 func NewClientTCP() *ClientTCP {
@@ -41,6 +43,7 @@ func NewClientTCPWithProtocol(p protocol.ClientProtocol) *ClientTCP {
 		msgs:           map[int32]message.Message{},
 		scheduler:      scheduler.NewScheduler(),
 		clientProtocol: p,
+		pendingCalls:   map[int32]chan message.Message{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	return c
@@ -106,6 +109,12 @@ func (c *ClientTCP) Close() error {
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
+	c.pendingMu.Lock()
+	for _, ch := range c.pendingCalls {
+		close(ch)
+	}
+	c.pendingCalls = map[int32]chan message.Message{}
+	c.pendingMu.Unlock()
 	c.wg.Wait()
 	c.scheduler.Stop()
 	return nil
@@ -148,8 +157,8 @@ func (c *ClientTCP) dispatch(msgID int32, payload []byte) {
 	pb, ok1 := c.msgs[msgID]
 	hd, ok2 := c.handlers[msgID]
 	c.handlersrw.RUnlock()
-	if !ok1 || !ok2 {
-		logx.Err.Printf("[ClientTCP/dispatch] message[%d] not found", msgID)
+	if !ok1 {
+		logx.Err.Printf("[ClientTCP/dispatch] message[%d] proto template not found", msgID)
 		return
 	}
 	bpb := pbp.Clone(pb)
@@ -157,7 +166,59 @@ func (c *ClientTCP) dispatch(msgID int32, payload []byte) {
 		logx.Err.Printf("[ClientTCP/dispatch] unmarshal message[%d] error: %v", msgID, err)
 		return
 	}
-	c.scheduler.PushTask(func() { hd(c, bpb.(message.Message)) })
+	msg := bpb.(message.Message)
+
+	c.pendingMu.Lock()
+	if ch, ok := c.pendingCalls[msgID]; ok {
+		delete(c.pendingCalls, msgID)
+		c.pendingMu.Unlock()
+		select {
+		case ch <- msg:
+			return
+		default:
+		}
+	} else {
+		c.pendingMu.Unlock()
+	}
+
+	if ok2 {
+		c.scheduler.PushTask(func() { hd(c, msg) })
+	}
+}
+
+func (c *ClientTCP) Call(ctx context.Context, req message.Message, respProto message.Message) (message.Message, error) {
+	respID := respProto.MessageID()
+
+	c.handlersrw.Lock()
+	if _, ok := c.msgs[respID]; !ok {
+		c.msgs[respID] = respProto
+	}
+	c.handlersrw.Unlock()
+
+	respCh := make(chan message.Message, 1)
+	c.pendingMu.Lock()
+	c.pendingCalls[respID] = respCh
+	c.pendingMu.Unlock()
+
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pendingCalls, respID)
+		c.pendingMu.Unlock()
+	}()
+
+	if err := c.Send(req); err != nil {
+		return nil, err
+	}
+
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			return nil, errors.New("[ClientTCP/Call] connection closed while waiting")
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 type clientTCPMessenger struct {

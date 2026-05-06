@@ -104,6 +104,12 @@ func (n *Node) forwardPkt(s session.Session, codec *protocol.Codec, pack *protoc
 		}
 		agent = a
 	case localNode != nil && localNode.Frontend:
+		if cs, ok := s.(interface {
+			ClientProtocol() protocol.ClientProtocol
+			SendData([]byte) error
+		}); ok {
+			return cs.SendData(cs.ClientProtocol().PackPooled(pack.ID(), pack.Data()))
+		}
 		return fmt.Errorf("no route for message %d", pack.ID())
 	default:
 		a, err := n.GatewayBySession(s)

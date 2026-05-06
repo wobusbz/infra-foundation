@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -81,11 +80,10 @@ func PutBuf(buf []byte) {
 }
 
 type Codec struct {
-	buf *bytes.Buffer
 }
 
 func NewCodec() *Codec {
-	return &Codec{buf: bytes.NewBuffer(nil)}
+	return &Codec{}
 }
 
 func (c *Codec) Pack(t ClusterType, id int32, sid string, payload []byte) ([]byte, error) {
