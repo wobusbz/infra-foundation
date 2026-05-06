@@ -7,11 +7,12 @@
 package protos
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -197,6 +198,94 @@ func (x *N2MLogin) GetName() string {
 	return ""
 }
 
+type C2SEnterMap struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *C2SEnterMap) Reset() {
+	*x = C2SEnterMap{}
+	mi := &file_user_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *C2SEnterMap) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*C2SEnterMap) ProtoMessage() {}
+
+func (x *C2SEnterMap) ProtoReflect() protoreflect.Message {
+	mi := &file_user_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use C2SEnterMap.ProtoReflect.Descriptor instead.
+func (*C2SEnterMap) Descriptor() ([]byte, []int) {
+	return file_user_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *C2SEnterMap) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type S2CEnterMap struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *S2CEnterMap) Reset() {
+	*x = S2CEnterMap{}
+	mi := &file_user_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S2CEnterMap) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S2CEnterMap) ProtoMessage() {}
+
+func (x *S2CEnterMap) ProtoReflect() protoreflect.Message {
+	mi := &file_user_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S2CEnterMap.ProtoReflect.Descriptor instead.
+func (*S2CEnterMap) Descriptor() ([]byte, []int) {
+	return file_user_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *S2CEnterMap) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 var File_user_proto protoreflect.FileDescriptor
 
 const file_user_proto_rawDesc = "" +
@@ -210,6 +299,10 @@ const file_user_proto_rawDesc = "" +
 	"\bM2NLogin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1e\n" +
 	"\bN2MLogin\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"!\n" +
+	"\vC2SEnterMap\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"!\n" +
+	"\vS2CEnterMap\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04nameB\tZ\a/protosb\x06proto3"
 
 var (
@@ -224,12 +317,14 @@ func file_user_proto_rawDescGZIP() []byte {
 	return file_user_proto_rawDescData
 }
 
-var file_user_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_user_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_user_proto_goTypes = []any{
-	(*C2SLogin)(nil), // 0: game.user.C2SLogin
-	(*S2CLogin)(nil), // 1: game.user.S2CLogin
-	(*M2NLogin)(nil), // 2: game.user.M2NLogin
-	(*N2MLogin)(nil), // 3: game.user.N2MLogin
+	(*C2SLogin)(nil),    // 0: game.user.C2SLogin
+	(*S2CLogin)(nil),    // 1: game.user.S2CLogin
+	(*M2NLogin)(nil),    // 2: game.user.M2NLogin
+	(*N2MLogin)(nil),    // 3: game.user.N2MLogin
+	(*C2SEnterMap)(nil), // 4: game.user.C2SEnterMap
+	(*S2CEnterMap)(nil), // 5: game.user.S2CEnterMap
 }
 var file_user_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -250,7 +345,7 @@ func file_user_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_user_proto_rawDesc), len(file_user_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

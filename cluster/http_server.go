@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"context"
+	"fmt"
+	"infra-foundation/logx"
 	"infra-foundation/metric"
 	"infra-foundation/model"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 type HTTPServer struct {
 	httpServer   *http.Server
 	modelManager *model.ModelManager
+	errCh        chan<- error
 }
 
 func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -19,7 +22,7 @@ func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	paths := strings.Split(r.URL.Path, "/")
-	if len(paths) < 3 {
+	if len(paths) < 3 || paths[1] == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -29,8 +32,12 @@ func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPServer) Listen(addr string) {
 	h.httpServer = &http.Server{Addr: addr, Handler: h}
 	go func() {
-		if err := h.httpServer.ListenAndServe(); err != nil {
-			panic(err)
+		if err := h.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logx.Err.Printf("[HTTPServer] ListenAndServe: %v", err)
+			select {
+			case h.errCh <- fmt.Errorf("http server: %w", err):
+			default:
+			}
 		}
 	}()
 }

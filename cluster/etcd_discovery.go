@@ -138,10 +138,12 @@ func (e *EtcdServiceDiscovery) tryReregister(name, advertiseAddr string, fronten
 	maxBackoff := 30 * time.Second
 	for {
 		jitter := time.Duration(rand.Int63n(int64(backoff)))
+		timer := time.NewTimer(backoff + jitter)
 		select {
 		case <-e.ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(backoff + jitter):
+		case <-timer.C:
 		}
 		logx.Inf.Printf("[EtcdServiceDiscovery/tryReregister] re-registering %s@%s", name, advertiseAddr)
 		if err := e.RegisterService(name, advertiseAddr, frontend, rids); err != nil {
@@ -231,7 +233,7 @@ func (e *EtcdServiceDiscovery) watch() {
 				}
 				switch ev.Type {
 				case clientv3.EventTypeDelete:
-					e.node.ServiceRegistry().RemoveNode(name, id)
+					e.node.RemoveNode(name, id)
 				case clientv3.EventTypePut:
 					if err = e.node.decodeRegistryAndConnect(name, ev.Kv.Value); err != nil {
 						logx.Err.Println("[EtcdServiceDiscovery/watch] ", err)

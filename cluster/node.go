@@ -1,34 +1,22 @@
 package cluster
 
 import (
+	"fmt"
 	"infra-foundation/config"
-	"infra-foundation/model"
+	"infra-foundation/message"
 	"infra-foundation/protocol"
-	"infra-foundation/queue"
-	"infra-foundation/scheduler"
 	"infra-foundation/session"
+
+	pbp "google.golang.org/protobuf/proto"
 )
-
-type Router interface {
-	RemoteCallWithAgent(s session.Session, p *protocol.Codec, pack *protocol.Pkt, nodeName string) error
-	GatewayBySession(s session.Session) (session.Session, error)
-}
-
-var _ Router = (*Node)(nil)
 
 type Node struct {
 	router *MessageRouter
 	peer   *PeerManager
-
-	connMgr      *session.Manager
-	modelManager *model.ModelManager
-	scheduler    *scheduler.Scheduler
-	msgQueue     *queue.TaskQueue
 }
 
-func newNode(connMgr *session.Manager, modelManager *model.ModelManager, scheduler *scheduler.Scheduler, msgQueue *queue.TaskQueue) *Node {
+func newNode(peerMgr *session.Manager) *Node {
 	registry := NewServiceRegistry()
-	peerMgr := session.NewManager()
 	sessionBinder := NewSessionBinder(peerMgr)
 
 	router := &MessageRouter{
@@ -42,22 +30,11 @@ func newNode(connMgr *session.Manager, modelManager *model.ModelManager, schedul
 		connectionPolicy: config.Default.ConnectionPolicy,
 	}
 
-	return &Node{
-		router:       router,
-		peer:         peer,
-		connMgr:      connMgr,
-		modelManager: modelManager,
-		scheduler:    scheduler,
-		msgQueue:     msgQueue,
-	}
+	return &Node{router: router, peer: peer}
 }
 
 func (n *Node) SetConnectionFactory(factory func(addr, id, name string, frontend bool) error) {
-	n.peer.connectionFactory = factory
-}
-
-func (n *Node) ServiceRegistry() *ServiceRegistry {
-	return n.router.registry
+	n.peer.SetConnectionFactory(factory)
 }
 
 func (n *Node) LoadBalancer() *LoadBalancer {
@@ -69,12 +46,12 @@ func (n *Node) PeerMgr() *session.Manager {
 }
 
 func (n *Node) LocalNode() *NodeInfo {
-	return n.peer.localNode
+	return n.peer.getLocalNode()
 }
 
 func (n *Node) SetLocalNode(name, id, addr string, frontend bool, rids []int32) {
 	node := &NodeInfo{Id: id, Name: name, Addr: addr, Frontend: frontend, Routes: rids}
-	n.peer.localNode = node
+	n.peer.setLocalNode(node)
 	n.router.sessionBinder.SetLocalNode(node)
 }
 
@@ -82,8 +59,25 @@ func (n *Node) GatewayBySession(s session.Session) (session.Session, error) {
 	return n.router.sessionBinder.GetFrontendNode(s, n.router.registry)
 }
 
+func (n *Node) GetNodes(name string) []*NodeInfo {
+	return n.router.registry.GetNodes(name)
+}
+
+func (n *Node) RemoveNode(name, id string) {
+	if n.peer.peerMgr != nil {
+		if conn, ok := n.peer.peerMgr.GetByID(session.SessionID(id)); ok {
+			conn.Close()
+		}
+	}
+	n.router.registry.RemoveNode(name, id)
+}
+
 func (n *Node) bindNodeConn(id string, conn session.Session) error {
 	return n.router.bindNodeConn(id, conn)
+}
+
+func (n *Node) broadcastSessionBind(s session.Session) error {
+	return n.router.broadcastSessionBind(s)
 }
 
 func (n *Node) broadcastSessionClose(s session.Session) error {
@@ -98,29 +92,46 @@ func (n *Node) serviceByRoute(id int32) string {
 	return n.router.serviceByRoute(id)
 }
 
-func (n *Node) RemoteCallWithAgent(s session.Session, p *protocol.Codec, pack *protocol.Pkt, nodeName string) error {
-	var (
-		agent session.Session
-		err   error
-	)
+func (n *Node) forwardPkt(s session.Session, codec *protocol.Codec, pack *protocol.Pkt, nodeName string) error {
 	defer pack.Free()
+	localNode := n.peer.getLocalNode()
+	var agent session.Session
 	switch {
 	case n.router.hasRoute(pack.ID()):
-		agent, err = n.router.nodeBySession(s, nodeName)
+		a, err := n.router.nodeBySession(s, nodeName)
 		if err != nil {
 			return err
 		}
-	case n.peer.localNode != nil && n.peer.localNode.Frontend:
-		agent = s
+		agent = a
+	case localNode != nil && localNode.Frontend:
+		return fmt.Errorf("no route for message %d", pack.ID())
 	default:
-		agent, err = n.GatewayBySession(s)
+		a, err := n.GatewayBySession(s)
 		if err != nil {
 			return err
 		}
+		agent = a
 	}
-	buf, err := p.Pack(pack.ClusterType(), pack.ID(), pack.SID(), pack.Data())
+	buf, err := codec.Pack(pack.ClusterType(), pack.ID(), pack.SID(), pack.Data())
 	if err != nil {
 		return err
 	}
-	return agent.SendData(buf)
+	if err := agent.SendData(buf); err != nil {
+		protocol.PutBuf(buf)
+		return err
+	}
+	return nil
+}
+
+func (n *Node) sendPkt(s session.Session, codec *protocol.Codec, sid string, pb message.Message, typ protocol.ClusterType, nodeName string) error {
+	pbdata, err := pbp.Marshal(pb)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	pack := protocol.NewWithSID(typ, pb.MessageID(), sid, pbdata)
+	return n.forwardPkt(s, codec, pack, nodeName)
+}
+
+func (n *Node) SendPb(s session.Session, codec *protocol.Codec, sid string, pb message.Message) error {
+	return n.sendPkt(s, codec, sid, pb, protocol.ClusterRequest, pb.ServiceName())
 }

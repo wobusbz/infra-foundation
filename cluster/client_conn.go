@@ -3,13 +3,12 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"infra-foundation/logx"
 	"infra-foundation/message"
+	"infra-foundation/model"
 	"infra-foundation/protocol"
 	"infra-foundation/session"
 	"infra-foundation/transport"
-	"sync/atomic"
-
-	pbp "google.golang.org/protobuf/proto"
 )
 
 var _ session.Session = (*ClientConn)(nil)
@@ -17,41 +16,57 @@ var _ session.Session = (*ClientConn)(nil)
 type ClientConn struct {
 	*session.SessionBase
 	Conn           *transport.Conn
+	codec          *protocol.Codec
 	clientProtocol protocol.ClientProtocol
 	node           *Node
-	closed         atomic.Bool
+	connMgr        *session.Manager
+	modelMgr       *model.ModelManager
 }
 
-func NewClientConn(conn *transport.Conn, clientProtocol protocol.ClientProtocol, node *Node) *ClientConn {
+func NewClientConn(
+	conn *transport.Conn,
+	clientProtocol protocol.ClientProtocol,
+	codec *protocol.Codec,
+	node *Node,
+	connMgr *session.Manager,
+	modelMgr *model.ModelManager,
+) *ClientConn {
 	c := &ClientConn{
 		Conn:           conn,
+		codec:          codec,
 		clientProtocol: clientProtocol,
 		node:           node,
+		connMgr:        connMgr,
+		modelMgr:       modelMgr,
 	}
 	c.SessionBase = &session.SessionBase{
 		SessionEntity: conn.SessionEntity,
 		Messenger:     &clientConnMessenger{c: c},
 	}
+	c.connMgr.Store(c)
 	return c
 }
 
+func (c *ClientConn) sendProtoMessage(pb message.Message) error {
+	return c.node.SendPb(c, c.codec, string(c.ID()), pb)
+}
+
 func (c *ClientConn) SendData(data []byte) error {
-	if c.closed.Load() {
-		return errors.New("[ClientConn/SendData] connection closed")
-	}
 	return c.Conn.SendData(data)
 }
 
-func (c *ClientConn) SendTypePb(typ int8, pb message.Message) error {
-	if c.closed.Load() {
-		return errors.New("[ClientConn/SendTypePb] connection closed")
+func (c *ClientConn) ClientProtocol() protocol.ClientProtocol {
+	return c.clientProtocol
+}
+
+func (c *ClientConn) BindUid(uid string) error {
+	c.SessionEntity.BindUid(uid)
+	c.modelMgr.OnSessionInitialization(c)
+	if err := c.node.broadcastSessionBind(c); err != nil {
+		logx.War.Printf("[ClientConn/BindUid] bind session %s to services: %v", c.ID(), err)
+		return fmt.Errorf("bind session to services: %w", err)
 	}
-	data, err := pbp.Marshal(pb)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	pack := c.clientProtocol.Pack(pb.MessageID(), data)
-	return c.Conn.SendData(pack)
+	return nil
 }
 
 type clientConnMessenger struct {
@@ -59,17 +74,32 @@ type clientConnMessenger struct {
 }
 
 func (m *clientConnMessenger) Send(pb message.Message) error {
-	return sendProtoMessage(&m.c.closed, "clientConnMessenger", m.c.node, m.c, m.c.Conn, string(m.c.ID()), pb)
+	if m.c.Conn.IsClosed() {
+		return errors.New("[ClientConn/Send] connection closed")
+	}
+	return m.c.sendProtoMessage(pb)
 }
 
 func (m *clientConnMessenger) Notify(targets []session.Session, pb message.Message) error {
 	var errs []error
-	for _, sv := range targets {
-		errs = append(errs, sv.Send(pb))
+	if len(targets) == 0 {
+		errs = append(errs, m.c.connMgr.Range(func(s session.Session) error { return s.Send(pb) }))
+	} else {
+		for _, sv := range targets {
+			errs = append(errs, sv.Send(pb))
+		}
 	}
 	return errors.Join(errs...)
 }
 
 func (m *clientConnMessenger) Close() error {
-	return m.c.Conn.Close()
+	var errs []error
+	if !m.c.Conn.IsClosed() {
+		errs = append(errs, m.c.Conn.Close())
+	}
+	m.c.modelMgr.OnDisconnection(m.c)
+	m.c.connMgr.RemoveByID(m.c.ID())
+	session.DefaultIDPool.Remove(m.c.ID())
+	errs = append(errs, m.c.node.broadcastSessionClose(m.c))
+	return errors.Join(errs...)
 }

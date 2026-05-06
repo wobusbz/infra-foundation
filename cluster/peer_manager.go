@@ -5,13 +5,36 @@ import (
 	"infra-foundation/config"
 	"infra-foundation/logx"
 	"infra-foundation/session"
+	"sync"
 )
 
 type PeerManager struct {
+	mu                sync.RWMutex
 	localNode         *NodeInfo
 	peerMgr           *session.Manager
 	connectionFactory func(addr, id, name string, frontend bool) error
 	connectionPolicy  config.ConnectionPolicy
+}
+
+func (pm *PeerManager) SetConnectionFactory(factory func(addr, id, name string, frontend bool) error) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.connectionFactory = factory
+}
+
+func (pm *PeerManager) getLocalNode() *NodeInfo {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.localNode == nil {
+		return nil
+	}
+	return pm.localNode.Clone()
+}
+
+func (pm *PeerManager) setLocalNode(node *NodeInfo) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.localNode = node
 }
 
 func (pm *PeerManager) connectToNode(targetNode *NodeInfo) error {
@@ -19,18 +42,20 @@ func (pm *PeerManager) connectToNode(targetNode *NodeInfo) error {
 		logx.Dbg.Printf("[PeerManager] connectionFactory not set, skip connecting to %s (passive connection will work)", targetNode.Name)
 		return nil
 	}
-	if pm.localNode == nil {
+	localNode := pm.getLocalNode()
+	if localNode == nil {
 		return fmt.Errorf("local node not set")
 	}
-	return pm.connectionFactory(targetNode.Addr, pm.localNode.Id, pm.localNode.Name, targetNode.Frontend)
+	return pm.connectionFactory(targetNode.Addr, localNode.Id, localNode.Name, localNode.Frontend)
 }
 
 func (pm *PeerManager) shouldConnectTo(node *NodeInfo) bool {
-	if pm.localNode == nil {
+	localNode := pm.getLocalNode()
+	if localNode == nil {
 		logx.Dbg.Printf("[PeerManager] shouldConnectTo: localNode is nil, skip")
 		return false
 	}
-	if node.Id == pm.localNode.Id {
+	if node.Id == localNode.Id {
 		logx.Dbg.Printf("[PeerManager] shouldConnectTo: same ID %s, skip", node.Id)
 		return false
 	}
@@ -40,15 +65,15 @@ func (pm *PeerManager) shouldConnectTo(node *NodeInfo) bool {
 	case config.ConnectPolicyAll:
 		return true
 	case config.ConnectPolicyFrontendToBackend:
-		return pm.localNode.Frontend && !node.Frontend
+		return localNode.Frontend && !node.Frontend
 	case config.ConnectPolicyBackendToFrontend:
-		return !pm.localNode.Frontend && node.Frontend
+		return !localNode.Frontend && node.Frontend
 	case config.ConnectPolicyByServicePriority:
-		if pm.localNode.Name == node.Name {
+		if localNode.Name == node.Name {
 			return false
 		}
-		result := config.ShouldConnectByPriority(pm.localNode.Name, pm.localNode.Id, node.Name, node.Id)
-		logx.Dbg.Printf("[PeerManager] shouldConnectTo: local(%s/%s) -> target(%s/%s) = %v", pm.localNode.Name, pm.localNode.Id, node.Name, node.Id, result)
+		result := config.ShouldConnectByPriority(localNode.Name, localNode.Id, node.Name, node.Id)
+		logx.Dbg.Printf("[PeerManager] shouldConnectTo: local(%s/%s) -> target(%s/%s) = %v", localNode.Name, localNode.Id, node.Name, node.Id, result)
 		return result
 	default:
 		return true
@@ -74,7 +99,8 @@ func (pm *PeerManager) decodeRegistryAndConnect(registry *ServiceRegistry, name 
 			continue
 		}
 		if err := pm.connectToNode(node); err != nil {
-			return err
+			logx.Err.Printf("[PeerManager] connect to %s@%s failed: %v", node.Name, node.Addr, err)
+			continue
 		}
 	}
 	return nil

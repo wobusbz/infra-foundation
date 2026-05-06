@@ -37,12 +37,6 @@ func NewServiceRegistry() *ServiceRegistry {
 	return &ServiceRegistry{nodes: make(map[string][]*NodeInfo), idNodes: make(map[string]*NodeInfo), routes: make(map[int32]string)}
 }
 
-func (r *ServiceRegistry) AddNode(node *NodeInfo) {
-	r.m.Lock()
-	defer r.m.Unlock()
-	r.addNodeLocked(node)
-}
-
 func (r *ServiceRegistry) addNodeLocked(node *NodeInfo) {
 	name := strings.ToLower(node.Name)
 	cloned := node.Clone()
@@ -137,15 +131,6 @@ func (r *ServiceRegistry) GetAllNodes() map[string][]*NodeInfo {
 	return nodesCopy
 }
 
-func (r *ServiceRegistry) Marshal(name string) (string, error) {
-	nodes := r.GetNodes(name)
-	rb, err := json.Marshal(nodes)
-	if err != nil {
-		return "", err
-	}
-	return string(rb), nil
-}
-
 func (r *ServiceRegistry) unmarshalOne(name string, node *NodeInfo) ([]*NodeInfo, error) {
 	r.m.Lock()
 	r.nodes[name] = slices.DeleteFunc(r.nodes[name], func(n *NodeInfo) bool {
@@ -184,30 +169,6 @@ func (r *ServiceRegistry) Unmarshal(name string, data []byte) ([]*NodeInfo, erro
 		}
 	}
 	return r.GetNodes(name), nil
-}
-
-func (r *ServiceRegistry) Size() int {
-	r.m.RLock()
-	defer r.m.RUnlock()
-	return len(r.nodes)
-}
-
-func (r *ServiceRegistry) HasNode(name, id string) bool {
-	name = strings.ToLower(name)
-	r.m.RLock()
-	defer r.m.RUnlock()
-
-	nodes, ok := r.nodes[name]
-	if !ok {
-		return false
-	}
-
-	for _, node := range nodes {
-		if node.Id == id {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *ServiceRegistry) RemoveNode(name, id string) {

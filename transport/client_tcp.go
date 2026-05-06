@@ -59,9 +59,9 @@ func (c *ClientTCP) Dial(addr string) error {
 	if err != nil {
 		return err
 	}
-	id := session.GenerateSessionID("cc")
+	id := session.GenerateSessionID()
 	c.SessionBase = &session.SessionBase{
-		SessionEntity: session.NewSessionEntity(id, -1),
+		SessionEntity: session.NewSessionEntity(id),
 		Messenger:     &clientTCPMessenger{c: c},
 	}
 	c.wg.Add(1)
@@ -134,7 +134,6 @@ func (c *ClientTCP) readerLoop() {
 			logx.Err.Println("[ClientTCP/readerLoop] unpack error:", err)
 			return
 		}
-		// 计算已消费的字节数
 		consumed := 0
 		for i := range msgIDs {
 			consumed += 8 + len(payloads[i])

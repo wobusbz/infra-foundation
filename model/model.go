@@ -12,7 +12,8 @@ type Model interface {
 	OnInit() error
 	OnStart() error
 	OnStop() error
-	OnDisconnection(session.Session)
+	OnSessionDisconnected(session.Session)
+	OnSessionInitialization(session.Session)
 }
 
 type modelActor struct {
@@ -40,8 +41,12 @@ func (m *modelActor) Forward(md *modelActor, cb func()) {
 	md.mailbox.PushTask(cb)
 }
 
-func (m *modelActor) OnDisconnection(s session.Session) {
-	m.mailbox.PushTask(func() { m.Model.OnDisconnection(s) })
+func (m *modelActor) OnSessionInitialization(s session.Session) {
+	m.mailbox.PushTask(func() { m.Model.OnSessionInitialization(s) })
+}
+
+func (m *modelActor) OnSessionDisconnected(s session.Session) {
+	m.mailbox.PushTask(func() { m.Model.OnSessionDisconnected(s) })
 }
 
 func (m *modelActor) Stop() {
@@ -58,10 +63,17 @@ type result[T any] struct {
 
 func Do[T any](ctx context.Context, m *modelActor, fn func() (T, error)) (T, error) {
 	resultChan := make(chan result[T], 1)
-
 	m.Post(func() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		val, err := fn()
-		resultChan <- result[T]{val, err}
+		select {
+		case resultChan <- result[T]{val, err}:
+		case <-ctx.Done():
+		}
 	})
 	select {
 	case res := <-resultChan:
@@ -71,4 +83,3 @@ func Do[T any](ctx context.Context, m *modelActor, fn func() (T, error)) (T, err
 		return zero, ctx.Err()
 	}
 }
-

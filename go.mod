@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/cloudwego/netpoll v0.7.2
 	go.etcd.io/etcd/client/v3 v3.6.6
-	google.golang.org/protobuf v1.36.10
+	google.golang.org/protobuf v1.36.11
 )
 
 require (

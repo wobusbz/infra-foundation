@@ -16,6 +16,7 @@ var (
 type ClientProtocol interface {
 	NextPacket(reader netpoll.Reader) (msgID int32, payload []byte, err error)
 	Pack(msgID int32, payload []byte) []byte
+	PackPooled(msgID int32, payload []byte) []byte
 	UnpackAll(data []byte) (msgIDs []int32, payloads [][]byte, err error)
 }
 

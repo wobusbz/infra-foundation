@@ -8,7 +8,6 @@ import (
 	"infra-foundation/logx"
 	"infra-foundation/model"
 	"infra-foundation/session"
-	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -16,10 +15,8 @@ import (
 )
 
 func init() {
-	model.RegisterTypedHandler(&protos.N2MLogin{}, func(ctx *session.Context, pb *protos.N2MLogin) {
-		reply := &protos.S2CLogin{Name: "Client TO ID " + string(ctx.Session.ID())}
-		if rand.Int()&1 == 0 {
-		}
+	model.RegisterTypedHandler(&protos.C2SEnterMap{}, func(ctx *session.Context, pb *protos.C2SEnterMap) {
+		reply := &protos.S2CEnterMap{Name: "Client TO ID " + string(ctx.Session.ID())}
 		err := ctx.Session.Send(reply)
 		if err != nil {
 			logx.Err.Println(err)
@@ -28,6 +25,7 @@ func init() {
 }
 
 type User struct {
+	allUsers map[string]struct{}
 }
 
 func (r *User) Name() string { return "user" }
@@ -38,12 +36,15 @@ func (r *User) OnStart() error { return nil }
 
 func (r *User) OnStop() error { return nil }
 
-func (r *User) OnDisconnection(s session.Session) {
+func (r *User) OnSessionDisconnected(s session.Session) {
 	logx.Dbg.Println("[User/OnDisconnection] ", s.ID())
+}
+func (r *User) OnSessionInitialization(s session.Session) {
+	logx.Dbg.Println("[User/OnSessionInitialization] ", s.ID())
 }
 
 func main() {
-	logx.SetLevel(logx.WarLevel())
+	//logx.SetLevel(logx.WarLevel())
 	go func() {
 		pp := os.Getenv("PPROF_PORT")
 		if pp == "" {
@@ -64,7 +65,6 @@ func main() {
 	}
 	defer discovery.Close()
 
-	logx.Dbg.Println(model.GetLocalHandlerIDs())
 	adver := fmt.Sprintf("%s:%s", localAddr, strings.Split(os.Args[2], ":")[1])
 	if err := discovery.RegisterService(os.Args[1], adver, false, model.GetLocalHandlerIDs()); err != nil {
 		panic(err)

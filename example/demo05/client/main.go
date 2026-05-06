@@ -48,16 +48,19 @@ func main() {
 				panic(err)
 			}
 			connCount.Add(1)
-			c.RegisterHandler(&protos.S2CLogin{}, func(cc *transport.ClientTCP, pb message.Message) { logx.Dbg.Println(pb) })
+			// c.RegisterHandler(&protos.S2CLogin{}, func(cc *transport.ClientTCP, pb message.Message) { logx.Dbg.Println(pb) })
+			c.RegisterHandler(&protos.S2CLogin{}, func(cc *transport.ClientTCP, pb message.Message) {})
+			c.RegisterHandler(&protos.S2CEnterMap{}, func(cc *transport.ClientTCP, pb message.Message) {})
+			c.Send(&protos.C2SLogin{Name: "C2SLogin"})
 			for range msgNum {
 				select {
 				case <-exitC:
 					return
 				default:
 				}
-				time.Sleep(time.Duration(100) * time.Millisecond)
+				time.Sleep(time.Duration(5) * time.Millisecond)
 				atomic.AddUint64(&sendCount, 1)
-				c.Send(&protos.C2SLogin{Name: "C2SLogin"})
+				c.Send(&protos.C2SEnterMap{Name: "C2SEnterMap"})
 			}
 		})
 		time.Sleep(time.Duration(rand.IntN(100)+100) * time.Millisecond)

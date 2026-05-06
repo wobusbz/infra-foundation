@@ -18,8 +18,9 @@ import (
 
 func init() {
 	model.RegisterTypedHandler(&protos.C2SLogin{}, func(ctx *session.Context, pb *protos.C2SLogin) {
-		ctx.Session.BindUID(time.Now().Unix())
-		ctx.Session.Send(&protos.N2MLogin{Name: "Helloworld client" + string(ctx.Session.ID())})
+		ctx.Session.BindUid(strconv.FormatInt(time.Now().Unix(), 10))
+		logx.Dbg.Println("C2SLogin: ", ctx.Session.ID())
+		ctx.Session.Send(&protos.S2CLogin{Name: "Helloworld client" + string(ctx.Session.ID())})
 	})
 }
 
@@ -29,12 +30,15 @@ func (u *User) Name() string   { return "user" }
 func (u *User) OnInit() error  { return nil }
 func (u *User) OnStart() error { return nil }
 func (u *User) OnStop() error  { return nil }
-func (u *User) OnDisconnection(s session.Session) {
+func (u *User) OnSessionDisconnected(s session.Session) {
 	logx.Dbg.Println("[User/OnDisconnection] ", s.ID())
+}
+func (u *User) OnSessionInitialization(s session.Session) {
+	logx.Dbg.Println("[User/OnSessionInitialization] ", s.ID())
 }
 
 func main() {
-	logx.SetLevel(logx.WarLevel())
+	//logx.SetLevel(logx.WarLevel())
 	go func() {
 		http.ListenAndServe("0.0.0.0:9009", nil)
 	}()

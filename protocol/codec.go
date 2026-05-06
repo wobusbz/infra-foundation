@@ -170,7 +170,7 @@ func (c *Codec) NextPacket(r netpoll.Reader) (netpoll.Reader, error) {
 	return r.Slice(pktLen)
 }
 
-func (c *Codec) Unpack1(r netpoll.Reader) (*Pkt, error) {
+func (c *Codec) Unpack(r netpoll.Reader) (*Pkt, error) {
 	off := 0
 	bMagic, err := r.Next(2)
 	if err != nil {
@@ -245,7 +245,7 @@ func (c *Codec) Unpack1(r netpoll.Reader) (*Pkt, error) {
 		}
 	}
 
-	payload, err := r.Next(pktLen - off)
+	payload, err := r.ReadBinary(pktLen - off)
 	if err != nil {
 		return nil, err
 	}
@@ -257,83 +257,4 @@ func (c *Codec) Unpack1(r netpoll.Reader) (*Pkt, error) {
 
 	_ = r.Release()
 	return NewWithSID(t, id, sid, payload), nil
-}
-
-func (c *Codec) Unpack(data []byte) ([]*Pkt, error) {
-	if len(data) > 0 {
-		c.buf.Write(data)
-	}
-
-	var pkts []*Pkt
-
-	for {
-		if c.buf.Len() < HdrLen {
-			break
-		}
-
-		b := c.buf.Bytes()[:HdrLen]
-		if binary.BigEndian.Uint16(b[:2]) != config.Default.ProtocolMagic {
-			return pkts, ErrBadMagic
-		}
-		version := b[2]
-		if version != config.Default.ProtocolVersion && version != 0x01 {
-			return pkts, ErrBadVersion
-		}
-		pktLen := int32(binary.BigEndian.Uint32(b[3:7]))
-
-		if c.buf.Len() < int(pktLen) {
-			break
-		}
-		if pktLen > MaxPktLen {
-			return pkts, ErrPktTooLarge
-		}
-
-		t := ClusterType(b[7])
-		if t < ClusterHeartbeat || t >= ClusterInvalid {
-			return pkts, ErrWrongType
-		}
-
-		c.buf.Next(HdrLen)
-
-		var sid string
-		var sidLen int
-		if version == config.Default.ProtocolVersion {
-			bSidLen := c.buf.Next(2)
-			sidLen = int(binary.BigEndian.Uint16(bSidLen))
-			if sidLen > 0 {
-				sid = string(c.buf.Next(sidLen))
-			}
-		}
-
-		id := int32(binary.BigEndian.Uint32(b[8:12]))
-		expectCrc := binary.BigEndian.Uint32(b[12:16])
-
-		var payloadLen int
-		if version == 0x01 {
-			payloadLen = int(pktLen) - HdrLen
-		} else {
-			payloadLen = int(pktLen) - HdrLen - 2 - sidLen
-		}
-		payload := c.buf.Next(payloadLen)
-
-		if config.Default.ProtocolEnableChecksum && crc32.ChecksumIEEE(payload) != expectCrc {
-			return pkts, ErrBadCrc
-		}
-
-		var pkt *Pkt
-		switch t {
-		case ClusterServiceCall, ClusterResponse:
-			pkt = NewWithSID(t, id, sid, payload)
-		default:
-			pkt = New(t, id, payload)
-		}
-		pkts = append(pkts, pkt)
-	}
-
-	if c.buf.Len() > 0 {
-		c.buf = bytes.NewBuffer(c.buf.Bytes())
-	} else {
-		c.buf.Reset()
-	}
-	return pkts, nil
 }

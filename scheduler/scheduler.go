@@ -96,7 +96,7 @@ func (s *Scheduler) runExecutor() {
 		}
 
 		batch := s.tasks
-		s.tasks = s.tasks[:0]
+		s.tasks = make([]TaskFunc, 0, cap(batch))
 
 		s.taskLock.Unlock()
 

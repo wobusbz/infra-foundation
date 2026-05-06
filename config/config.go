@@ -28,6 +28,8 @@ type Config struct {
 	EtcdDialTimeout time.Duration
 	EtcdOpTimeout   time.Duration
 
+	PeerDialTimeout time.Duration
+
 	TransportWriteQueueSize    int
 	TransportWriteQueueMode    WriteQueueMode
 	TransportWriteQueueTimeout time.Duration
@@ -86,6 +88,7 @@ func NewDefault() *Config {
 		EtcdTTL:                      5 * 2,
 		EtcdDialTimeout:              5 * time.Second,
 		EtcdOpTimeout:                5 * 6 * time.Second,
+		PeerDialTimeout:              time.Second,
 		TransportWriteQueueSize:      4096,
 		TransportWriteQueueMode:      WriteQueueModeDrop,
 		TransportWriteQueueTimeout:   time.Second,

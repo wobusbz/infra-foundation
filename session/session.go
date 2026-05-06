@@ -12,9 +12,8 @@ import (
 var DefaultIDPool = sessionIDPool{ids: map[SessionID]struct{}{}}
 
 type sessionIDPool struct {
-	nextID int64
-	ids    map[SessionID]struct{}
-	idsrw  sync.RWMutex
+	ids   map[SessionID]struct{}
+	idsrw sync.RWMutex
 }
 
 func (d *sessionIDPool) Count() int64 {
@@ -35,8 +34,8 @@ func (d *sessionIDPool) Reset() {
 	d.idsrw.Unlock()
 }
 
-func (d *sessionIDPool) NextID(prefix string) SessionID {
-	id := GenerateSessionID(prefix)
+func (d *sessionIDPool) NextID() SessionID {
+	id := GenerateSessionID()
 	d.idsrw.Lock()
 	d.ids[id] = struct{}{}
 	d.idsrw.Unlock()
@@ -55,10 +54,6 @@ type PacketSender interface {
 	SendData(data []byte) error
 }
 
-type TypePbSender interface {
-	SendTypePb(typ int8, pb message.Message) error
-}
-
 type Messenger interface {
 	Send(pb message.Message) error
 	Notify(targets []Session, pb message.Message) error
@@ -67,18 +62,18 @@ type Messenger interface {
 
 type Session interface {
 	ID() SessionID
-	UID() int64
 	BindID(id SessionID)
-	BindUID(uid int64)
+	BindUid(uid string) error
+	UID() string
 	GetServers(name string) string
 	BindServers(name, id string)
 	Servers() map[string]string
 	RangeServers(fn func(name, id string) bool)
 	Send(pb message.Message) error
 	Notify(targets []Session, pb message.Message) error
+	SendTypePb(typ int8, pb message.Message) error
 	Close() error
 	PacketSender
-	TypePbSender
 }
 
 type SessionBase struct {
@@ -107,25 +102,19 @@ func (b *SessionBase) Close() error {
 	return b.Messenger.Close()
 }
 
-func (b *SessionBase) SendData(data []byte) error {
-	return errors.New("session: SendData not implemented")
-}
-
 func (b *SessionBase) SendTypePb(typ int8, pb message.Message) error {
-	return errors.New("session: SendTypePb not implemented")
+	return errors.New("session: SendTypePb not supported")
 }
 
 type SessionEntity struct {
-	id         atomic.Value
-	uid        atomic.Int64
-	isPeerConn atomic.Bool
-	servers    map[string]string
-	serversrw  sync.RWMutex
+	id        atomic.Value
+	uid       atomic.Value
+	servers   map[string]string
+	serversrw sync.RWMutex
 }
 
-func NewSessionEntity(id SessionID, uid int64) *SessionEntity {
+func NewSessionEntity(id SessionID) *SessionEntity {
 	n := &SessionEntity{servers: map[string]string{}}
-	n.uid.Store(uid)
 	n.id.Store(id)
 	return n
 }
@@ -138,11 +127,17 @@ func (n *SessionEntity) ID() SessionID {
 	return v.(SessionID)
 }
 
-func (n *SessionEntity) UID() int64          { return n.uid.Load() }
 func (n *SessionEntity) BindID(id SessionID) { n.id.Store(id) }
-func (n *SessionEntity) BindUID(uid int64)   { n.uid.Store(uid) }
-func (n *SessionEntity) IsPeerConn() bool    { return n.isPeerConn.Load() }
-func (n *SessionEntity) SetPeerConn(v bool)  { n.isPeerConn.Store(v) }
+
+func (n *SessionEntity) BindUid(uid string) error { n.uid.Store(uid); return nil }
+
+func (n *SessionEntity) UID() string {
+	v := n.uid.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
+}
 
 func (n *SessionEntity) GetServers(name string) string {
 	n.serversrw.RLock()

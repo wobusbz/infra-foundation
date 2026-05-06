@@ -8,15 +8,15 @@ import (
 type ClusterType byte
 
 const (
-	ClusterHeartbeat ClusterType = 0x01 + iota
-	ClusterRequest
-	ClusterHandshake   // Connection
-	ClusterDisconnect  // DisConnection
-	ClusterBindSession // BindConnection
-	ClusterServiceCall // InternalData
-	ClusterResponse    // ClientData
-	ClusterPush        // NotifyData
-	ClusterInvalid
+	ClusterHeartbeat         ClusterType = 0x01 + iota
+	ClusterHandshake                     // 0x02
+	ClusterSessionDisconnect             // 0x03
+	ClusterSessionBind                   // 0x04 (was ClusterSessionConnection)
+	_                                    // 0x05 (was ClusterSessionInitialization, removed)
+	ClusterRequest                       // 0x06
+	ClusterResponse                      // 0x07
+	ClusterPush                          // 0x08
+	ClusterInvalid                       // 0x09
 )
 
 var pktPool = sync.Pool{New: func() any { return &Pkt{} }}
@@ -25,7 +25,6 @@ type Pkt struct {
 	typ  ClusterType
 	id   int32
 	sid  string
-	uid  int64
 	len  int32
 	data []byte
 }
@@ -55,7 +54,6 @@ func (p *Pkt) Free() {
 	p.len = 0
 	p.id = 0
 	p.sid = ""
-	p.uid = 0
 	p.data = nil
 	pktPool.Put(p)
 }
@@ -63,8 +61,6 @@ func (p *Pkt) Free() {
 func (p *Pkt) ID() int32 { return p.id }
 
 func (p *Pkt) SID() string { return p.sid }
-
-func (p *Pkt) UID() int64 { return p.uid }
 
 func (p *Pkt) ClusterType() ClusterType { return p.typ }
 

@@ -70,14 +70,26 @@ func (m *ModelManager) Stop() error {
 	return nil
 }
 
-func (m *ModelManager) OnDisconnection(session session.Session) {
+func (m *ModelManager) OnSessionInitialization(s session.Session) {
 	m.mu.RLock()
 	for _, name := range m.order {
 		md, ok := m.modes[name]
 		if !ok {
 			continue
 		}
-		md.OnDisconnection(session)
+		md.OnSessionInitialization(s)
+	}
+	m.mu.RUnlock()
+}
+
+func (m *ModelManager) OnDisconnection(s session.Session) {
+	m.mu.RLock()
+	for _, name := range m.order {
+		md, ok := m.modes[name]
+		if !ok {
+			continue
+		}
+		md.OnSessionDisconnected(s)
 	}
 	m.mu.RUnlock()
 }

@@ -7,11 +7,12 @@
 package clusterpb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -21,29 +22,29 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type N2MSend struct {
+type N2MOnHandshake struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionID     string                 `protobuf:"bytes,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
-	MsgID         int32                  `protobuf:"varint,2,opt,name=MsgID,proto3" json:"MsgID,omitempty"`
-	Plyload       []byte                 `protobuf:"bytes,3,opt,name=Plyload,proto3" json:"Plyload,omitempty"`
+	ID            string                 `protobuf:"bytes,1,opt,name=ID,proto3" json:"ID,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=Name,proto3" json:"Name,omitempty"`
+	Frontend      bool                   `protobuf:"varint,3,opt,name=Frontend,proto3" json:"Frontend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *N2MSend) Reset() {
-	*x = N2MSend{}
+func (x *N2MOnHandshake) Reset() {
+	*x = N2MOnHandshake{}
 	mi := &file_cluster_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *N2MSend) String() string {
+func (x *N2MOnHandshake) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*N2MSend) ProtoMessage() {}
+func (*N2MOnHandshake) ProtoMessage() {}
 
-func (x *N2MSend) ProtoReflect() protoreflect.Message {
+func (x *N2MOnHandshake) ProtoReflect() protoreflect.Message {
 	mi := &file_cluster_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -55,176 +56,56 @@ func (x *N2MSend) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use N2MSend.ProtoReflect.Descriptor instead.
-func (*N2MSend) Descriptor() ([]byte, []int) {
+// Deprecated: Use N2MOnHandshake.ProtoReflect.Descriptor instead.
+func (*N2MOnHandshake) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *N2MSend) GetSessionID() string {
-	if x != nil {
-		return x.SessionID
-	}
-	return ""
-}
-
-func (x *N2MSend) GetMsgID() int32 {
-	if x != nil {
-		return x.MsgID
-	}
-	return 0
-}
-
-func (x *N2MSend) GetPlyload() []byte {
-	if x != nil {
-		return x.Plyload
-	}
-	return nil
-}
-
-type N2MOnConnection struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ID            string                 `protobuf:"bytes,1,opt,name=ID,proto3" json:"ID,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=Name,proto3" json:"Name,omitempty"`
-	Frontend      bool                   `protobuf:"varint,3,opt,name=Frontend,proto3" json:"Frontend,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *N2MOnConnection) Reset() {
-	*x = N2MOnConnection{}
-	mi := &file_cluster_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *N2MOnConnection) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*N2MOnConnection) ProtoMessage() {}
-
-func (x *N2MOnConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use N2MOnConnection.ProtoReflect.Descriptor instead.
-func (*N2MOnConnection) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *N2MOnConnection) GetID() string {
+func (x *N2MOnHandshake) GetID() string {
 	if x != nil {
 		return x.ID
 	}
 	return ""
 }
 
-func (x *N2MOnConnection) GetName() string {
+func (x *N2MOnHandshake) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *N2MOnConnection) GetFrontend() bool {
+func (x *N2MOnHandshake) GetFrontend() bool {
 	if x != nil {
 		return x.Frontend
 	}
 	return false
 }
 
-type M2NOnConnection struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ID            string                 `protobuf:"bytes,1,opt,name=ID,proto3" json:"ID,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=Name,proto3" json:"Name,omitempty"`
-	Frontend      bool                   `protobuf:"varint,3,opt,name=Frontend,proto3" json:"Frontend,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *M2NOnConnection) Reset() {
-	*x = M2NOnConnection{}
-	mi := &file_cluster_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *M2NOnConnection) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*M2NOnConnection) ProtoMessage() {}
-
-func (x *M2NOnConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use M2NOnConnection.ProtoReflect.Descriptor instead.
-func (*M2NOnConnection) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *M2NOnConnection) GetID() string {
-	if x != nil {
-		return x.ID
-	}
-	return ""
-}
-
-func (x *M2NOnConnection) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *M2NOnConnection) GetFrontend() bool {
-	if x != nil {
-		return x.Frontend
-	}
-	return false
-}
-
-type N2MOnSessionBindServer struct {
+type N2MOnSessionBind struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionID     string                 `protobuf:"bytes,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
-	UID           int64                  `protobuf:"varint,2,opt,name=UID,proto3" json:"UID,omitempty"`
+	UID           string                 `protobuf:"bytes,2,opt,name=UID,proto3" json:"UID,omitempty"`
 	Servers       map[string]string      `protobuf:"bytes,3,rep,name=Servers,proto3" json:"Servers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *N2MOnSessionBindServer) Reset() {
-	*x = N2MOnSessionBindServer{}
-	mi := &file_cluster_proto_msgTypes[3]
+func (x *N2MOnSessionBind) Reset() {
+	*x = N2MOnSessionBind{}
+	mi := &file_cluster_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *N2MOnSessionBindServer) String() string {
+func (x *N2MOnSessionBind) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*N2MOnSessionBindServer) ProtoMessage() {}
+func (*N2MOnSessionBind) ProtoMessage() {}
 
-func (x *N2MOnSessionBindServer) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[3]
+func (x *N2MOnSessionBind) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -235,54 +116,54 @@ func (x *N2MOnSessionBindServer) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use N2MOnSessionBindServer.ProtoReflect.Descriptor instead.
-func (*N2MOnSessionBindServer) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use N2MOnSessionBind.ProtoReflect.Descriptor instead.
+func (*N2MOnSessionBind) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *N2MOnSessionBindServer) GetSessionID() string {
+func (x *N2MOnSessionBind) GetSessionID() string {
 	if x != nil {
 		return x.SessionID
 	}
 	return ""
 }
 
-func (x *N2MOnSessionBindServer) GetUID() int64 {
+func (x *N2MOnSessionBind) GetUID() string {
 	if x != nil {
 		return x.UID
 	}
-	return 0
+	return ""
 }
 
-func (x *N2MOnSessionBindServer) GetServers() map[string]string {
+func (x *N2MOnSessionBind) GetServers() map[string]string {
 	if x != nil {
 		return x.Servers
 	}
 	return nil
 }
 
-type N2MOnSessionClose struct {
+type N2MOnSessionDisconnected struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionID     string                 `protobuf:"bytes,1,opt,name=SessionID,proto3" json:"SessionID,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *N2MOnSessionClose) Reset() {
-	*x = N2MOnSessionClose{}
-	mi := &file_cluster_proto_msgTypes[4]
+func (x *N2MOnSessionDisconnected) Reset() {
+	*x = N2MOnSessionDisconnected{}
+	mi := &file_cluster_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *N2MOnSessionClose) String() string {
+func (x *N2MOnSessionDisconnected) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*N2MOnSessionClose) ProtoMessage() {}
+func (*N2MOnSessionDisconnected) ProtoMessage() {}
 
-func (x *N2MOnSessionClose) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[4]
+func (x *N2MOnSessionDisconnected) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -293,19 +174,19 @@ func (x *N2MOnSessionClose) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use N2MOnSessionClose.ProtoReflect.Descriptor instead.
-func (*N2MOnSessionClose) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{4}
+// Deprecated: Use N2MOnSessionDisconnected.ProtoReflect.Descriptor instead.
+func (*N2MOnSessionDisconnected) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *N2MOnSessionClose) GetSessionID() string {
+func (x *N2MOnSessionDisconnected) GetSessionID() string {
 	if x != nil {
 		return x.SessionID
 	}
 	return ""
 }
 
-type N2MNotify struct {
+type N2MOnPush struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionID     []string               `protobuf:"bytes,1,rep,name=SessionID,proto3" json:"SessionID,omitempty"`
 	Plyload       []byte                 `protobuf:"bytes,2,opt,name=Plyload,proto3" json:"Plyload,omitempty"`
@@ -314,21 +195,21 @@ type N2MNotify struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *N2MNotify) Reset() {
-	*x = N2MNotify{}
-	mi := &file_cluster_proto_msgTypes[5]
+func (x *N2MOnPush) Reset() {
+	*x = N2MOnPush{}
+	mi := &file_cluster_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *N2MNotify) String() string {
+func (x *N2MOnPush) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*N2MNotify) ProtoMessage() {}
+func (*N2MOnPush) ProtoMessage() {}
 
-func (x *N2MNotify) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[5]
+func (x *N2MOnPush) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -339,26 +220,26 @@ func (x *N2MNotify) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use N2MNotify.ProtoReflect.Descriptor instead.
-func (*N2MNotify) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{5}
+// Deprecated: Use N2MOnPush.ProtoReflect.Descriptor instead.
+func (*N2MOnPush) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *N2MNotify) GetSessionID() []string {
+func (x *N2MOnPush) GetSessionID() []string {
 	if x != nil {
 		return x.SessionID
 	}
 	return nil
 }
 
-func (x *N2MNotify) GetPlyload() []byte {
+func (x *N2MOnPush) GetPlyload() []byte {
 	if x != nil {
 		return x.Plyload
 	}
 	return nil
 }
 
-func (x *N2MNotify) GetMsgID() int32 {
+func (x *N2MOnPush) GetMsgID() int32 {
 	if x != nil {
 		return x.MsgID
 	}
@@ -369,29 +250,21 @@ var File_cluster_proto protoreflect.FileDescriptor
 
 const file_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\rcluster.proto\x12\acluster\"W\n" +
-	"\aN2MSend\x12\x1c\n" +
-	"\tSessionID\x18\x01 \x01(\tR\tSessionID\x12\x14\n" +
-	"\x05MsgID\x18\x02 \x01(\x05R\x05MsgID\x12\x18\n" +
-	"\aPlyload\x18\x03 \x01(\fR\aPlyload\"Q\n" +
-	"\x0fN2MOnConnection\x12\x0e\n" +
+	"\rcluster.proto\x12\acluster\"P\n" +
+	"\x0eN2MOnHandshake\x12\x0e\n" +
 	"\x02ID\x18\x01 \x01(\tR\x02ID\x12\x12\n" +
 	"\x04Name\x18\x02 \x01(\tR\x04Name\x12\x1a\n" +
-	"\bFrontend\x18\x03 \x01(\bR\bFrontend\"Q\n" +
-	"\x0fM2NOnConnection\x12\x0e\n" +
-	"\x02ID\x18\x01 \x01(\tR\x02ID\x12\x12\n" +
-	"\x04Name\x18\x02 \x01(\tR\x04Name\x12\x1a\n" +
-	"\bFrontend\x18\x03 \x01(\bR\bFrontend\"\xcc\x01\n" +
-	"\x16N2MOnSessionBindServer\x12\x1c\n" +
+	"\bFrontend\x18\x03 \x01(\bR\bFrontend\"\xc0\x01\n" +
+	"\x10N2MOnSessionBind\x12\x1c\n" +
 	"\tSessionID\x18\x01 \x01(\tR\tSessionID\x12\x10\n" +
-	"\x03UID\x18\x02 \x01(\x03R\x03UID\x12F\n" +
-	"\aServers\x18\x03 \x03(\v2,.cluster.N2MOnSessionBindServer.ServersEntryR\aServers\x1a:\n" +
+	"\x03UID\x18\x02 \x01(\tR\x03UID\x12@\n" +
+	"\aServers\x18\x03 \x03(\v2&.cluster.N2MOnSessionBind.ServersEntryR\aServers\x1a:\n" +
 	"\fServersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"1\n" +
-	"\x11N2MOnSessionClose\x12\x1c\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"8\n" +
+	"\x18N2MOnSessionDisconnected\x12\x1c\n" +
 	"\tSessionID\x18\x01 \x01(\tR\tSessionID\"Y\n" +
-	"\tN2MNotify\x12\x1c\n" +
+	"\tN2MOnPush\x12\x1c\n" +
 	"\tSessionID\x18\x01 \x03(\tR\tSessionID\x12\x18\n" +
 	"\aPlyload\x18\x02 \x01(\fR\aPlyload\x12\x14\n" +
 	"\x05MsgID\x18\x03 \x01(\x05R\x05MsgIDB\fZ\n" +
@@ -409,18 +282,16 @@ func file_cluster_proto_rawDescGZIP() []byte {
 	return file_cluster_proto_rawDescData
 }
 
-var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_cluster_proto_goTypes = []any{
-	(*N2MSend)(nil),                // 0: cluster.N2MSend
-	(*N2MOnConnection)(nil),        // 1: cluster.N2MOnConnection
-	(*M2NOnConnection)(nil),        // 2: cluster.M2NOnConnection
-	(*N2MOnSessionBindServer)(nil), // 3: cluster.N2MOnSessionBindServer
-	(*N2MOnSessionClose)(nil),      // 4: cluster.N2MOnSessionClose
-	(*N2MNotify)(nil),              // 5: cluster.N2MNotify
-	nil,                            // 6: cluster.N2MOnSessionBindServer.ServersEntry
+	(*N2MOnHandshake)(nil),           // 0: cluster.N2MOnHandshake
+	(*N2MOnSessionBind)(nil),         // 1: cluster.N2MOnSessionBind
+	(*N2MOnSessionDisconnected)(nil), // 2: cluster.N2MOnSessionDisconnected
+	(*N2MOnPush)(nil),                // 3: cluster.N2MOnPush
+	nil,                              // 4: cluster.N2MOnSessionBind.ServersEntry
 }
 var file_cluster_proto_depIdxs = []int32{
-	6, // 0: cluster.N2MOnSessionBindServer.Servers:type_name -> cluster.N2MOnSessionBindServer.ServersEntry
+	4, // 0: cluster.N2MOnSessionBind.Servers:type_name -> cluster.N2MOnSessionBind.ServersEntry
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -439,7 +310,7 @@ func file_cluster_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cluster_proto_rawDesc), len(file_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

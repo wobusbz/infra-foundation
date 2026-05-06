@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"infra-foundation/logx"
 	"math/rand"
-	"slices"
 	"sync"
 	"time"
 )
@@ -14,6 +13,7 @@ type LoadBalancer struct {
 	health   map[string]bool
 	mu       sync.RWMutex
 	rnd      *rand.Rand
+	rndMu    sync.Mutex
 }
 
 func NewLoadBalancer(registry *ServiceRegistry) *LoadBalancer {
@@ -28,12 +28,6 @@ func (lb *LoadBalancer) MarkHealthy(nodeID string, healthy bool) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 	lb.health[nodeID] = healthy
-}
-
-func (lb *LoadBalancer) IsHealthy(nodeID string) bool {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
-	return lb.health[nodeID]
 }
 
 func (lb *LoadBalancer) Pick(serviceName string) (*NodeInfo, error) {
@@ -57,62 +51,8 @@ func (lb *LoadBalancer) Pick(serviceName string) (*NodeInfo, error) {
 		return nil, fmt.Errorf("no available nodes for service: %s", serviceName)
 	}
 
-	lb.mu.Lock()
+	lb.rndMu.Lock()
 	idx := lb.rnd.Intn(len(healthyNodes))
-	lb.mu.Unlock()
+	lb.rndMu.Unlock()
 	return healthyNodes[idx], nil
-}
-
-func (lb *LoadBalancer) PickFrontend(serviceName string) (*NodeInfo, error) {
-	nodes := lb.registry.GetNodes(serviceName)
-
-	lb.mu.RLock()
-	var frontendNodes []*NodeInfo
-	for _, node := range nodes {
-		if node.Frontend && lb.health[node.Id] {
-			frontendNodes = append(frontendNodes, node)
-		}
-	}
-	lb.mu.RUnlock()
-
-	if len(frontendNodes) == 0 && len(nodes) > 0 {
-		for _, node := range nodes {
-			if node.Frontend {
-				frontendNodes = append(frontendNodes, node)
-			}
-		}
-	}
-
-	if len(frontendNodes) == 0 {
-		logx.War.Printf("no frontend nodes for service: %s", serviceName)
-		return nil, fmt.Errorf("no frontend nodes for service: %s", serviceName)
-	}
-
-	lb.mu.Lock()
-	idx := lb.rnd.Intn(len(frontendNodes))
-	lb.mu.Unlock()
-	return frontendNodes[idx], nil
-}
-
-func (lb *LoadBalancer) PickByID(id string) (*NodeInfo, error) {
-	node, ok := lb.registry.GetNodeByID(id)
-	if !ok {
-		return nil, fmt.Errorf("node %s not found", id)
-	}
-	return node, nil
-}
-
-func (lb *LoadBalancer) GetNodesByRoute(routeID int32) []*NodeInfo {
-	allNodes := lb.registry.GetAllNodes()
-
-	var result []*NodeInfo
-	for _, nodes := range allNodes {
-		for _, node := range nodes {
-			if slices.Contains(node.Routes, routeID) {
-				result = append(result, node)
-			}
-		}
-	}
-
-	return result
 }

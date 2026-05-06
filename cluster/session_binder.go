@@ -6,11 +6,12 @@ import (
 	"infra-foundation/logx"
 	"infra-foundation/protocol"
 	"infra-foundation/session"
+	"sync/atomic"
 )
 
 type SessionBinder struct {
 	connMgr   *session.Manager
-	localNode *NodeInfo
+	localNode atomic.Pointer[NodeInfo]
 }
 
 func NewSessionBinder(connMgr *session.Manager) *SessionBinder {
@@ -18,7 +19,12 @@ func NewSessionBinder(connMgr *session.Manager) *SessionBinder {
 }
 
 func (sb *SessionBinder) SetLocalNode(node *NodeInfo) {
-	sb.localNode = node
+	sb.localNode.Store(node)
+}
+
+func (sb *SessionBinder) IsLocalNodeName(name string) bool {
+	n := sb.localNode.Load()
+	return n != nil && n.Name == name
 }
 
 func (sb *SessionBinder) BindSessionToNode(sess session.Session, node *NodeInfo) error {
@@ -29,17 +35,17 @@ func (sb *SessionBinder) BindSessionToNode(sess session.Session, node *NodeInfo)
 
 	sess.BindServers(node.Name, node.Id)
 
-	if sb.localNode != nil {
-		sess.BindServers(sb.localNode.Name, sb.localNode.Id)
+	if ln := sb.localNode.Load(); ln != nil {
+		sess.BindServers(ln.Name, ln.Id)
 	}
 
-	pb := &clusterpb.N2MOnSessionBindServer{
+	pb := &clusterpb.N2MOnSessionBind{
 		SessionID: string(sess.ID()),
 		UID:       sess.UID(),
 		Servers:   sess.Servers(),
 	}
 
-	return conn.SendTypePb(int8(protocol.ClusterBindSession), pb)
+	return conn.SendTypePb(int8(protocol.ClusterSessionBind), pb)
 }
 
 func (sb *SessionBinder) GetNodeConnection(nodeID string) (session.Session, bool) {
@@ -51,10 +57,6 @@ func (sb *SessionBinder) StoreNodeConnection(nodeID string, conn session.Session
 		return fmt.Errorf("cannot store nil connection for node %s", nodeID)
 	}
 	conn.BindID(session.SessionID(nodeID))
-	conn.BindUID(-1)
-	if se, ok := conn.(interface{ SetPeerConn(bool) }); ok {
-		se.SetPeerConn(true)
-	}
 	sb.connMgr.Store(conn)
 	return nil
 }
@@ -84,18 +86,4 @@ func (sb *SessionBinder) GetFrontendNode(sess session.Session, registry *Service
 	}
 	logx.War.Printf("session %s has no gate node", sess.ID())
 	return nil, fmt.Errorf("session %s has no gate node", sess.ID())
-}
-
-func (sb *SessionBinder) GetNodeByName(sess session.Session, serviceName string) (session.Session, error) {
-	nodeID := sess.GetServers(serviceName)
-	if nodeID == "" {
-		return nil, fmt.Errorf("session not bound to service %s", serviceName)
-	}
-
-	conn, ok := sb.connMgr.GetByID(session.SessionID(nodeID))
-	if !ok {
-		return nil, fmt.Errorf("node %s connection not found", nodeID)
-	}
-
-	return conn, nil
 }

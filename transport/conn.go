@@ -2,10 +2,8 @@ package transport
 
 import (
 	"errors"
-	"fmt"
 	"infra-foundation/config"
 	"infra-foundation/logx"
-	"infra-foundation/message"
 	"infra-foundation/metric"
 	"infra-foundation/protocol"
 	"infra-foundation/session"
@@ -13,15 +11,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	pb "google.golang.org/protobuf/proto"
 )
 
 type Conn struct {
 	wc io.WriteCloser
 	*session.SessionEntity
-	*protocol.Codec
 	writeQ            chan []byte
+	die               chan struct{}
 	writeQueueMode    config.WriteQueueMode
 	writeQueueTimeout time.Duration
 	closed            atomic.Bool
@@ -29,14 +25,14 @@ type Conn struct {
 	wg                sync.WaitGroup
 }
 
-func NewConn(wc io.WriteCloser, id session.SessionID, uid int64) *Conn {
+func NewConn(wc io.WriteCloser, id session.SessionID) *Conn {
 	c := &Conn{
 		wc:                wc,
 		writeQ:            make(chan []byte, config.Default.TransportWriteQueueSize),
+		die:               make(chan struct{}),
 		writeQueueMode:    config.Default.TransportWriteQueueMode,
 		writeQueueTimeout: config.Default.TransportWriteQueueTimeout,
-		SessionEntity:     session.NewSessionEntity(id, uid),
-		Codec:             protocol.NewCodec(),
+		SessionEntity:     session.NewSessionEntity(id),
 	}
 	c.wg.Go(c.writeLoop)
 	return c
@@ -60,25 +56,6 @@ func (c *Conn) SetHeartbeatAt(now int64) {
 
 func (c *Conn) RefreshHeartbeat() {
 	c.SetHeartbeatAt(time.Now().Unix())
-}
-
-func (c *Conn) Send(pb message.Message) error {
-	if c.IsClosed() {
-		return errors.New("[transport.Conn/Send] connection closed")
-	}
-	return c.SendTypePb(int8(protocol.ClusterRequest), pb)
-}
-
-func (c *Conn) SendTypePb(typ int8, msg message.Message) error {
-	if c.IsClosed() {
-		return errors.New("[transport.Conn/SendTypePb] connection closed")
-	}
-	data, err := pb.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	pdata := protocol.New(protocol.ClusterType(typ), msg.MessageID(), data)
-	return c.SendPack(pdata)
 }
 
 func (c *Conn) SendData(data []byte) error {
@@ -113,32 +90,11 @@ func (c *Conn) SendData(data []byte) error {
 	}
 }
 
-func (c *Conn) SendPack(pack *protocol.Pkt) error {
-	if c.IsClosed() {
-		pack.Free()
-		return errors.New("[transport.Conn/SendPack] connection closed")
-	}
-	data, err := c.Codec.Pack(pack.ClusterType(), pack.ID(), string(c.ID()), pack.Data())
-	pack.Free()
-	if err != nil {
-		return fmt.Errorf("pack: %w", err)
-	}
-	return c.SendData(data)
-}
-
-func (c *Conn) Notify(s []session.Session, pb message.Message) error {
-	var errs []error
-	for _, sv := range s {
-		errs = append(errs, sv.Send(pb))
-	}
-	return errors.Join(errs...)
-}
-
 func (c *Conn) Close() error {
 	if !c.SetClosed() {
 		return nil
 	}
-	close(c.writeQ)
+	close(c.die)
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
@@ -149,23 +105,41 @@ func (c *Conn) Close() error {
 	case <-time.After(c.writeQueueTimeout):
 		logx.War.Printf("[transport.Conn/Close] writeLoop wait timeout, forcing close")
 	}
-	if c.wc != nil {
-		if err := c.wc.Close(); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
 func (c *Conn) writeLoop() {
 	const maxBatch = 16
 	const maxBatchBytes = 64 * 1024
-
-	for {
-		buf, ok := <-c.writeQ
-		if !ok {
+	defer func() {
+		if c.wc == nil {
 			return
 		}
+		if err := c.wc.Close(); err != nil {
+			logx.Err.Println(err)
+		}
+	}()
+	for {
+		var buf []byte
+		var ok bool
+		select {
+		case buf, ok = <-c.writeQ:
+			if !ok {
+				return
+			}
+		case <-c.die:
+			for {
+				select {
+				case buf := <-c.writeQ:
+					if len(buf) > 0 {
+						protocol.PutBuf(buf)
+					}
+				default:
+					return
+				}
+			}
+		}
+
 		if len(buf) == 0 {
 			protocol.PutBuf(buf)
 			continue

@@ -4,34 +4,23 @@ package cluster;
 option go_package = "./;cluster";
 
 
-message /*1*/ N2MSend {
-    string                      SessionID                   = 1;
-    int32                       MsgID                       = 2;
-    bytes                       Plyload                     = 3;
-}
-
-message /*2*/ N2MOnConnection {
-    string                      ID                          = 1;
-    string                      Name                        = 2;
-    bool                        Frontend                    = 3;
-}
-message /*3*/ M2NOnConnection {
+message /*1*/ N2MOnHandshake {
     string                      ID                          = 1;
     string                      Name                        = 2;
     bool                        Frontend                    = 3;
 }
 
-message /*4*/ N2MOnSessionBindServer {
+message /*2*/ N2MOnSessionBind {
     string                      SessionID                   = 1;
-    int64                       UID                         = 2;
+    string                      UID                         = 2;
     map<string, string>         Servers                     = 3;
 }
 
-message /*5*/ N2MOnSessionClose {
+message /*3*/ N2MOnSessionDisconnected {
     string                      SessionID                   = 1;
 }
 
-message /*6*/ N2MNotify {
+message /*4*/ N2MOnPush {
     repeated string             SessionID                   = 1;
     bytes                       Plyload                     = 2;
     int32                       MsgID                       = 3;

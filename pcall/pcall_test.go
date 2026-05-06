@@ -52,10 +52,3 @@ const (
 	DisSession
 	Invalid
 )
-
-
-
-
-
-
-
