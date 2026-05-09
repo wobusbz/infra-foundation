@@ -6,39 +6,52 @@ import (
 	"sync"
 )
 
-type Manager struct {
-	byID map[SessionID]Session
+type Identifiable interface {
+	ID() SessionID
+}
+
+type Store[T Identifiable] interface {
+	Store(s T)
+	GetByID(id SessionID) (T, bool)
+	RemoveByID(id SessionID)
+	Range(fn func(s T) error) error
+	Count() int
+}
+
+type Manager[T Identifiable] struct {
+	byID map[SessionID]T
 	mu   sync.RWMutex
 }
 
-func NewManager() *Manager {
-	return &Manager{
-		byID: map[SessionID]Session{},
+func NewManager[T Identifiable]() *Manager[T] {
+	return &Manager[T]{
+		byID: map[SessionID]T{},
 	}
 }
 
-func (m *Manager) Store(s Session) {
+func (m *Manager[T]) Store(s T) {
+	id := s.ID()
 	m.mu.Lock()
-	m.byID[s.ID()] = s
+	m.byID[id] = s
 	m.mu.Unlock()
 	metric.CounterOf("sess_total").Inc()
 	metric.GaugeOf("sess_active").Add(1)
 }
 
-func (m *Manager) Count() int {
+func (m *Manager[T]) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.byID)
 }
 
-func (m *Manager) GetByID(id SessionID) (Session, bool) {
+func (m *Manager[T]) GetByID(id SessionID) (T, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	s, ok := m.byID[id]
 	return s, ok
 }
 
-func (m *Manager) RemoveByID(id SessionID) {
+func (m *Manager[T]) RemoveByID(id SessionID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.byID[id]; !ok {
@@ -49,9 +62,9 @@ func (m *Manager) RemoveByID(id SessionID) {
 	metric.GaugeOf("sess_active").Sub(1)
 }
 
-func (m *Manager) Range(fn func(s Session) error) error {
+func (m *Manager[T]) Range(fn func(s T) error) error {
 	m.mu.RLock()
-	sess := make([]Session, 0, len(m.byID))
+	sess := make([]T, 0, len(m.byID))
 	for _, s := range m.byID {
 		sess = append(sess, s)
 	}

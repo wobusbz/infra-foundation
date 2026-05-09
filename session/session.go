@@ -2,12 +2,26 @@ package session
 
 import (
 	"context"
-	"errors"
-	"infra-foundation/message"
-	"maps"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
+
+	"infra-foundation/message"
 )
+
+const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+type SessionID string
+
+func (t SessionID) String() string { return string(t) }
+
+func GenerateSessionID() SessionID {
+	var buf [16]byte
+	for i := range buf {
+		buf[i] = base62Chars[rand.IntN(62)]
+	}
+	return SessionID(string(buf[:]))
+}
 
 var DefaultIDPool = sessionIDPool{ids: map[SessionID]struct{}{}}
 
@@ -54,120 +68,94 @@ type PacketSender interface {
 	SendData(data []byte) error
 }
 
-type Messenger interface {
+type Identity interface {
+	ID() SessionID
+	BindID(id SessionID)
+	UID() string
+	BindUid(uid string) error
+}
+
+type AppSender interface {
 	Send(pb message.Message) error
+}
+
+type Notifier interface {
 	Notify(targets []Session, pb message.Message) error
+}
+
+type Closer interface {
 	Close() error
 }
 
 type Session interface {
-	ID() SessionID
-	BindID(id SessionID)
-	BindUid(uid string) error
-	UID() string
-	GetServers(name string) string
-	BindServers(name, id string)
-	Servers() map[string]string
-	RangeServers(fn func(name, id string) bool)
-	Send(pb message.Message) error
-	Notify(targets []Session, pb message.Message) error
-	SendTypePb(typ int8, pb message.Message) error
-	Close() error
+	Identity
+	AppSender
+	Notifier
+	Closer
 	PacketSender
 }
 
-type SessionBase struct {
-	*SessionEntity
-	Messenger Messenger
+type SessionState int32
+
+const (
+	SessionCreated SessionState = iota
+	SessionUIDBound
+	SessionClosing
+	SessionClosed
+)
+
+type SessionCore struct {
+	id    atomic.Value
+	uid   atomic.Value
+	state atomic.Int32
 }
 
-func (b *SessionBase) Send(pb message.Message) error {
-	if b.Messenger == nil {
-		return errors.New("session: messenger not set")
-	}
-	return b.Messenger.Send(pb)
+func NewSessionCore(id SessionID) *SessionCore {
+	s := &SessionCore{}
+	s.id.Store(id)
+	return s
 }
 
-func (b *SessionBase) Notify(targets []Session, pb message.Message) error {
-	if b.Messenger == nil {
-		return errors.New("session: messenger not set")
-	}
-	return b.Messenger.Notify(targets, pb)
-}
-
-func (b *SessionBase) Close() error {
-	if b.Messenger == nil {
-		return nil
-	}
-	return b.Messenger.Close()
-}
-
-func (b *SessionBase) SendTypePb(typ int8, pb message.Message) error {
-	return errors.New("session: SendTypePb not supported")
-}
-
-type SessionEntity struct {
-	id        atomic.Value
-	uid       atomic.Value
-	servers   map[string]string
-	serversrw sync.RWMutex
-}
-
-func NewSessionEntity(id SessionID) *SessionEntity {
-	n := &SessionEntity{servers: map[string]string{}}
-	n.id.Store(id)
-	return n
-}
-
-func (n *SessionEntity) ID() SessionID {
-	v := n.id.Load()
+func (s *SessionCore) ID() SessionID {
+	v := s.id.Load()
 	if v == nil {
 		return ""
 	}
 	return v.(SessionID)
 }
 
-func (n *SessionEntity) BindID(id SessionID) { n.id.Store(id) }
+func (s *SessionCore) BindID(id SessionID) { s.id.Store(id) }
 
-func (n *SessionEntity) BindUid(uid string) error { n.uid.Store(uid); return nil }
+func (s *SessionCore) BindUid(uid string) error { s.uid.Store(uid); return nil }
 
-func (n *SessionEntity) UID() string {
-	v := n.uid.Load()
+func (s *SessionCore) UID() string {
+	v := s.uid.Load()
 	if v == nil {
 		return ""
 	}
 	return v.(string)
 }
 
-func (n *SessionEntity) GetServers(name string) string {
-	n.serversrw.RLock()
-	defer n.serversrw.RUnlock()
-	return n.servers[name]
+func (s *SessionCore) State() SessionState {
+	return SessionState(s.state.Load())
 }
 
-func (n *SessionEntity) BindServers(name, id string) {
-	n.serversrw.Lock()
-	n.servers[name] = id
-	n.serversrw.Unlock()
-}
-
-func (n *SessionEntity) Servers() map[string]string {
-	n.serversrw.RLock()
-	defer n.serversrw.RUnlock()
-	if len(n.servers) == 0 {
-		return nil
+func (s *SessionCore) TransitionToUIDBound() bool {
+	state := s.state.Load()
+	if state != int32(SessionCreated) {
+		return false
 	}
-	servers := make(map[string]string, len(n.servers))
-	maps.Copy(servers, n.servers)
-	return servers
+	return s.state.CompareAndSwap(int32(SessionCreated), int32(SessionUIDBound))
 }
 
-func (n *SessionEntity) RangeServers(fn func(name, id string) bool) {
-	n.serversrw.RLock()
-	defer n.serversrw.RUnlock()
-	for name, id := range n.servers {
-		if !fn(name, id) {
-			break
-		}
+func (s *SessionCore) TransitionToClosing() bool {
+	state := s.state.Load()
+	if state == int32(SessionClosing) || state == int32(SessionClosed) {
+		return false
 	}
+	return s.state.CompareAndSwap(state, int32(SessionClosing))
+}
+
+func (s *SessionCore) MarkClosed() {
+	s.state.Store(int32(SessionClosed))
 }

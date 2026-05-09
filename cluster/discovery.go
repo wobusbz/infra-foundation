@@ -18,20 +18,21 @@ import (
 )
 
 type EtcdServiceDiscovery struct {
-	node       *Node
-	client     *clientv3.Client
-	ctx        context.Context
-	cancel     context.CancelFunc
-	preKey     string
-	closed     atomic.Bool
-	ttl        int64
-	wg         sync.WaitGroup
-	leaseID    clientv3.LeaseID
-	serviceKey string
-	mu         sync.Mutex
+	handler        DiscoveryHandler
+	onLocalNodeSet func(name, id, addr string, frontend bool, rids []int32)
+	client         *clientv3.Client
+	ctx            context.Context
+	cancel         context.CancelFunc
+	preKey         string
+	closed         atomic.Bool
+	ttl            int64
+	wg             sync.WaitGroup
+	leaseID        clientv3.LeaseID
+	serviceKey     string
+	mu             sync.Mutex
 }
 
-func NewEtcdServiceDiscovery(preKey string, addr string, node *Node) (*EtcdServiceDiscovery, error) {
+func NewEtcdServiceDiscovery(preKey string, addr string, handler DiscoveryHandler, onLocalNodeSet func(name, id, addr string, frontend bool, rids []int32)) (*EtcdServiceDiscovery, error) {
 	etcdCfg := clientv3.Config{Endpoints: []string{addr}, DialTimeout: config.Default.EtcdDialTimeout}
 	client, err := clientv3.New(etcdCfg)
 	if err != nil {
@@ -43,7 +44,7 @@ func NewEtcdServiceDiscovery(preKey string, addr string, node *Node) (*EtcdServi
 		client.Close()
 		return nil, fmt.Errorf("etcd ping %s: %w", addr, err)
 	}
-	e := &EtcdServiceDiscovery{preKey: preKey, node: node, client: client, ttl: config.Default.EtcdTTL}
+	e := &EtcdServiceDiscovery{preKey: preKey, handler: handler, onLocalNodeSet: onLocalNodeSet, client: client, ttl: config.Default.EtcdTTL}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 
 	if err = e.list(); err != nil {
@@ -85,8 +86,11 @@ func (e *EtcdServiceDiscovery) RegisterService(name, advertiseAddr string, front
 	} else {
 		k = fmt.Sprintf("/%s/%s/%s", preKey, name, id)
 	}
-	e.node.SetLocalNode(name, id, advertiseAddr, frontend, rids)
-	data, err := json.Marshal(e.node.LocalNode())
+	if e.onLocalNodeSet != nil {
+		e.onLocalNodeSet(name, id, advertiseAddr, frontend, rids)
+	}
+	localNode := &NodeInfo{Id: id, Name: name, Addr: advertiseAddr, Frontend: frontend, Routes: rids}
+	data, err := json.Marshal(localNode)
 	if err != nil {
 		return fmt.Errorf("marshal service info: %w", err)
 	}
@@ -191,6 +195,10 @@ func (e *EtcdServiceDiscovery) parseKey(k []byte) (kname, nid string, err error)
 	return parts[0], parts[1], nil
 }
 
+func (e *EtcdServiceDiscovery) handleRegistry(name string, data []byte) {
+	e.handler.HandleDiscoveryEvent(DiscoveryEvent{Type: NodeUpdated, Name: name, Data: data})
+}
+
 func (e *EtcdServiceDiscovery) list() error {
 	prefix := "/" + strings.Trim(e.preKey, "/")
 	grsp, err := e.client.Get(e.ctx, prefix, clientv3.WithPrefix())
@@ -203,10 +211,7 @@ func (e *EtcdServiceDiscovery) list() error {
 			logx.Err.Printf("[EtcdServiceDiscovery/list] skipping invalid key: %s", string(v.Key))
 			continue
 		}
-		if err = e.node.decodeRegistryAndConnect(name, v.Value); err != nil {
-			logx.Err.Printf("[EtcdServiceDiscovery/list] failed to decode registry for %s: %v", name, err)
-			continue
-		}
+		e.handleRegistry(name, v.Value)
 	}
 	return nil
 }
@@ -233,11 +238,9 @@ func (e *EtcdServiceDiscovery) watch() {
 				}
 				switch ev.Type {
 				case clientv3.EventTypeDelete:
-					e.node.RemoveNode(name, id)
+					e.handler.HandleDiscoveryEvent(DiscoveryEvent{Type: NodeRemoved, Name: name, ID: id})
 				case clientv3.EventTypePut:
-					if err = e.node.decodeRegistryAndConnect(name, ev.Kv.Value); err != nil {
-						logx.Err.Println("[EtcdServiceDiscovery/watch] ", err)
-					}
+					e.handleRegistry(name, ev.Kv.Value)
 				}
 			}
 		}

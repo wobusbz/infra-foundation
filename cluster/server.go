@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"infra-foundation/clusterpb"
 	"infra-foundation/config"
@@ -11,6 +12,7 @@ import (
 	"infra-foundation/queue"
 	"infra-foundation/scheduler"
 	"infra-foundation/session"
+	"math"
 	"os"
 	"os/signal"
 
@@ -23,40 +25,16 @@ import (
 type ServerOption func(*ServerOptions)
 
 type ServerOptions struct {
-	ConnMgr      *session.Manager
-	ModelManager *model.ModelManager
-	Scheduler    *scheduler.Scheduler
-	TaskQueue    *queue.TaskQueue
-	Config       *config.Config
+	ConnMgr    ClientStore
+	Dispatcher ModelDispatcher
+	Executor   TaskExecutor
+	TaskQueue  *queue.TaskQueue
+	Config     *config.Config
 }
 
-func WithConnMgr(cm *session.Manager) ServerOption {
+func WithModelManager(mm ModelDispatcher) ServerOption {
 	return func(o *ServerOptions) {
-		o.ConnMgr = cm
-	}
-}
-
-func WithModelManager(mm *model.ModelManager) ServerOption {
-	return func(o *ServerOptions) {
-		o.ModelManager = mm
-	}
-}
-
-func WithScheduler(sch *scheduler.Scheduler) ServerOption {
-	return func(o *ServerOptions) {
-		o.Scheduler = sch
-	}
-}
-
-func WithTaskQueue(wm *queue.TaskQueue) ServerOption {
-	return func(o *ServerOptions) {
-		o.TaskQueue = wm
-	}
-}
-
-func WithConfig(cfg *config.Config) ServerOption {
-	return func(o *ServerOptions) {
-		o.Config = cfg
+		o.Dispatcher = mm
 	}
 }
 
@@ -65,14 +43,16 @@ type server struct {
 	clusterHandler *ClusterHandler
 	clientPoll     netpoll.EventLoop
 	clusterPoll    netpoll.EventLoop
-	clientMgr      *session.Manager
-	peerMgr        *session.Manager
-	modelManager   *model.ModelManager
-	scheduler      *scheduler.Scheduler
+	clientMgr      ClientStore
+	peerMgr        PeerStore
+	dispatcher     ModelDispatcher
+	executor       TaskExecutor
 	msgQueue       *queue.TaskQueue
 	config         *config.Config
 	httpServer     *HTTPServer
 	node           *Node
+	peerLifecycle  *PeerLifecycle
+	peerConnector  *PeerConnector
 	errCh          chan error
 }
 
@@ -86,17 +66,17 @@ func NewServer(options ...ServerOption) *server {
 
 	connMgr := opts.ConnMgr
 	if connMgr == nil {
-		connMgr = session.NewManager()
+		connMgr = session.NewManager[session.Session]()
 	}
 
-	modelManager := opts.ModelManager
-	if modelManager == nil {
-		modelManager = model.DefaultModelManager
+	dispatcher := opts.Dispatcher
+	if dispatcher == nil {
+		dispatcher = model.DefaultModelManager
 	}
 
-	sch := opts.Scheduler
-	if sch == nil {
-		sch = scheduler.NewScheduler()
+	executor := opts.Executor
+	if executor == nil {
+		executor = scheduler.NewScheduler()
 	}
 
 	msgQueue := opts.TaskQueue
@@ -105,57 +85,70 @@ func NewServer(options ...ServerOption) *server {
 	}
 
 	clientMgr := connMgr
-	peerMgr := session.NewManager()
+	peerMgr := session.NewManager[NodeConn]()
 
 	s := &server{
-		clientMgr:    clientMgr,
-		peerMgr:      peerMgr,
-		modelManager: modelManager,
-		scheduler:    sch,
-		msgQueue:     msgQueue,
-		config:       opts.Config,
-		node:         newNode(peerMgr),
-		errCh:        make(chan error, 2),
+		clientMgr:  clientMgr,
+		peerMgr:    peerMgr,
+		dispatcher: dispatcher,
+		executor:   executor,
+		msgQueue:   msgQueue,
+		config:     opts.Config,
+		node:       newNode(clientMgr, peerMgr, dispatcher),
+		errCh:      make(chan error, 2),
 	}
 
-	s.node.SetConnectionFactory(func(addr, id, name string, frontend bool) error {
-		logx.Dbg.Printf("[Server/connectionFactory] connecting to %s (id=%s, name=%s, frontend=%v)", addr, id, name, frontend)
-		var conn *PeerConn
-		var err error
-		for i := range 3 {
-			if i > 0 {
-				logx.Dbg.Printf("[Server/connectionFactory] retry %d connecting to %s", i, addr)
-				time.Sleep(time.Second)
-			}
-			conn, err = NewOutboundPeerConn(peerMgr, sch, s.node, addr, s.clusterHandler.MessageHandler)
-			if err != nil {
-				logx.War.Printf("[Server/connectionFactory] dial %s failed (attempt %d): %v", addr, i+1, err)
-				continue
-			}
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to connect to %s after retries: %w", addr, err)
-		}
-		conn.BindID(session.SessionID(id))
-		if err := conn.SendTypePb(int8(protocol.ClusterHandshake), &clusterpb.N2MOnHandshake{ID: id, Name: name, Frontend: frontend}); err != nil {
-			_ = conn.Close()
-			return fmt.Errorf("send conn packet to %s: %w", addr, err)
-		}
-		logx.Dbg.Printf("[Server/connectionFactory] Conn packet sent to %s", addr)
-		return nil
-	})
+	s.node.SetConnectionFactory(s.connectToPeer)
 
-	s.clientHandler = NewClientHandler(clientMgr, modelManager, msgQueue, s.node)
-	s.clusterHandler = NewClusterHandler(clientMgr, peerMgr, modelManager, sch, msgQueue, s.node)
-	s.httpServer = &HTTPServer{modelManager: s.modelManager, errCh: s.errCh}
+	s.peerConnector = NewPeerConnector(
+		s.node.router.registry,
+		s.peerMgr,
+		s.clientMgr,
+		s.node.router.sessionBinder,
+		s.connectToPeer,
+		s.node.LocalNode,
+	)
+
+	lifecycle := NewFrontendLifecycle(dispatcher, clientMgr, s.node, &session.DefaultIDPool)
+	s.clientHandler = NewClientHandler(dispatcher, msgQueue, s.node, lifecycle)
+	s.peerLifecycle = NewPeerLifecycle(s.peerMgr, s.peerMgr, s.executor, s.node.LoadBalancer(), &session.DefaultIDPool)
+	s.clusterHandler = NewClusterHandler(clientMgr, peerMgr, dispatcher, executor, msgQueue, s.node, s.peerLifecycle)
+	s.httpServer = &HTTPServer{dispatcher: dispatcher, errCh: s.errCh}
 
 	return s
 }
 
+func (s *server) connectToPeer(addr, id, name string, frontend bool) error {
+	logx.Dbg.Printf("[Server/connectToPeer] connecting to %s (id=%s, name=%s, frontend=%v)", addr, id, name, frontend)
+	var conn *PeerConn
+	var err error
+	for i := range math.MaxInt64 {
+		if i > 0 {
+			logx.Dbg.Printf("[Server/connectToPeer] retry %d connecting to %s", i, addr)
+			time.Sleep(time.Second)
+		}
+		conn, err = NewOutboundPeerConn(s.peerLifecycle, addr, s.clusterHandler.Router(), s.msgQueue)
+		if err != nil {
+			logx.War.Printf("[Server/connectToPeer] dial %s failed (attempt %d): %v", addr, i+1, err)
+			continue
+		}
+		break
+	}
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s after retries: %w", addr, err)
+	}
+	conn.BindID(session.SessionID(id))
+	if err := conn.SendTypePb(int8(protocol.ClusterHandshake), &clusterpb.N2MOnHandshake{ID: id, Name: name, Frontend: frontend}); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("send conn packet to %s: %w", addr, err)
+	}
+	logx.Dbg.Printf("[Server/connectToPeer] Conn packet sent to %s", addr)
+	return nil
+}
+
 func (s *server) ClusterNode() *Node { return s.node }
 
-func (s *server) Errors() <-chan error { return s.errCh }
+func (s *server) PeerConnector() *PeerConnector { return s.peerConnector }
 
 func (s *server) ListenClient(addr string) error {
 	logx.Inf.Printf("[START] Client TCP listener at Addr: %s is starting", addr)
@@ -209,11 +202,6 @@ func (s *server) ListenCluster(addr string) error {
 	return nil
 }
 
-func (s *server) ListenWeb(addr string) {
-	logx.Inf.Printf("[START] HTTP Server listener at Addr: %s is starting", addr)
-	s.httpServer.Listen(addr)
-}
-
 func (s *server) Run(ctx context.Context) {
 	cg := make(chan os.Signal, 1)
 	signal.Notify(cg, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
@@ -226,21 +214,23 @@ func (s *server) Run(ctx context.Context) {
 func (s *server) Shutdown(ctx context.Context) error {
 	xctx, cancel := context.WithTimeout(ctx, s.config.ShutdownTimeout)
 	defer cancel()
-	s.msgQueue.Close()
-	s.scheduler.Stop()
-	s.modelManager.Stop()
-	s.clientMgr.Range(func(s session.Session) error { return s.Close() })
-	s.peerMgr.Range(func(s session.Session) error { return s.Close() })
+	var errs = make([]error, 0, 6)
 	if s.clusterPoll != nil {
-		_ = s.clusterPoll.Shutdown(xctx)
+		errs = append(errs, s.clusterPoll.Shutdown(xctx))
 	}
 	if s.clientPoll != nil {
-		_ = s.clientPoll.Shutdown(xctx)
+		errs = append(errs, s.clientPoll.Shutdown(xctx))
 	}
+
+	errs = append(errs, s.clientMgr.Range(func(sess session.Session) error { return sess.Close() }))
+	errs = append(errs, s.peerMgr.Range(func(peer NodeConn) error { return peer.Close() }))
+
+	errs = append(errs, s.dispatcher.Stop())
+	s.executor.Stop()
+	s.msgQueue.Close()
+
 	if s.httpServer != nil {
-		if err := s.httpServer.Shutdown(xctx); err != nil {
-			logx.Err.Printf("[Server/Shutdown] http shutdown error: %v", err)
-		}
+		errs = append(errs, s.httpServer.Shutdown(xctx))
 	}
-	return nil
+	return errors.Join(errs...)
 }

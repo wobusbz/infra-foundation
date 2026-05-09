@@ -5,15 +5,14 @@ import (
 	"fmt"
 	"infra-foundation/logx"
 	"infra-foundation/metric"
-	"infra-foundation/model"
 	"net/http"
 	"strings"
 )
 
 type HTTPServer struct {
-	httpServer   *http.Server
-	modelManager *model.ModelManager
-	errCh        chan<- error
+	httpServer *http.Server
+	dispatcher ModelDispatcher
+	errCh      chan<- error
 }
 
 func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +25,7 @@ func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	h.modelManager.DispatchHTTP(paths[1], w, r)
+	h.dispatcher.DispatchHTTP(paths[1], w, r)
 }
 
 func (h *HTTPServer) Listen(addr string) {

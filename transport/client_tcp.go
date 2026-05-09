@@ -3,13 +3,14 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"infra-foundation/logx"
 	"infra-foundation/message"
 	"infra-foundation/protocol"
-	"infra-foundation/scheduler"
-	"infra-foundation/session"
+	"math/rand"
 	"net"
 	"sync"
+	"time"
 
 	pbp "google.golang.org/protobuf/proto"
 )
@@ -17,12 +18,11 @@ import (
 type clientMsgHandler func(*ClientTCP, message.Message)
 
 type ClientTCP struct {
-	*session.SessionBase
+	id             string
 	conn           net.Conn
 	handlers       map[int32]clientMsgHandler
 	msgs           map[int32]message.Message
 	handlersrw     sync.RWMutex
-	scheduler      *scheduler.Scheduler
 	wg             sync.WaitGroup
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -39,15 +39,17 @@ func NewClientTCP() *ClientTCP {
 
 func NewClientTCPWithProtocol(p protocol.ClientProtocol) *ClientTCP {
 	c := &ClientTCP{
+		id:             fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63()),
 		handlers:       map[int32]clientMsgHandler{},
 		msgs:           map[int32]message.Message{},
-		scheduler:      scheduler.NewScheduler(),
 		clientProtocol: p,
 		pendingCalls:   map[int32]chan message.Message{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	return c
 }
+
+func (c *ClientTCP) ID() string { return c.id }
 
 func (c *ClientTCP) RegisterHandler(pb message.Message, h clientMsgHandler) {
 	c.handlersrw.Lock()
@@ -61,11 +63,6 @@ func (c *ClientTCP) Dial(addr string) error {
 	c.conn, err = net.Dial("tcp", addr)
 	if err != nil {
 		return err
-	}
-	id := session.GenerateSessionID()
-	c.SessionBase = &session.SessionBase{
-		SessionEntity: session.NewSessionEntity(id),
-		Messenger:     &clientTCPMessenger{c: c},
 	}
 	c.wg.Add(1)
 	go c.readerLoop()
@@ -116,7 +113,6 @@ func (c *ClientTCP) Close() error {
 	c.pendingCalls = map[int32]chan message.Message{}
 	c.pendingMu.Unlock()
 	c.wg.Wait()
-	c.scheduler.Stop()
 	return nil
 }
 
@@ -182,7 +178,7 @@ func (c *ClientTCP) dispatch(msgID int32, payload []byte) {
 	}
 
 	if ok2 {
-		c.scheduler.PushTask(func() { hd(c, msg) })
+		go hd(c, msg)
 	}
 }
 
@@ -219,24 +215,4 @@ func (c *ClientTCP) Call(ctx context.Context, req message.Message, respProto mes
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-type clientTCPMessenger struct {
-	c *ClientTCP
-}
-
-func (m *clientTCPMessenger) Send(pb message.Message) error {
-	return m.c.Send(pb)
-}
-
-func (m *clientTCPMessenger) Notify(targets []session.Session, pb message.Message) error {
-	var errs []error
-	for _, sv := range targets {
-		errs = append(errs, sv.Send(pb))
-	}
-	return errors.Join(errs...)
-}
-
-func (m *clientTCPMessenger) Close() error {
-	return m.c.Close()
 }

@@ -5,17 +5,19 @@ import (
 	"infra-foundation/config"
 	"infra-foundation/logx"
 	"infra-foundation/metric"
-	"infra-foundation/protocol"
-	"infra-foundation/session"
 	"io"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+type BufReleaser interface {
+	Release([]byte)
+}
+
 type Conn struct {
-	wc io.WriteCloser
-	*session.SessionEntity
+	wc                io.WriteCloser
+	id                string
 	writeQ            chan []byte
 	die               chan struct{}
 	writeQueueMode    config.WriteQueueMode
@@ -23,19 +25,34 @@ type Conn struct {
 	closed            atomic.Bool
 	lastHeartBeatTime atomic.Int64
 	wg                sync.WaitGroup
+	bufReleaser       BufReleaser
 }
 
-func NewConn(wc io.WriteCloser, id session.SessionID) *Conn {
+func NewConn(wc io.WriteCloser, id string) *Conn {
 	c := &Conn{
 		wc:                wc,
+		id:                id,
 		writeQ:            make(chan []byte, config.Default.TransportWriteQueueSize),
 		die:               make(chan struct{}),
 		writeQueueMode:    config.Default.TransportWriteQueueMode,
 		writeQueueTimeout: config.Default.TransportWriteQueueTimeout,
-		SessionEntity:     session.NewSessionEntity(id),
 	}
 	c.wg.Go(c.writeLoop)
 	return c
+}
+
+func (c *Conn) SessionID() string {
+	return c.id
+}
+
+func (c *Conn) SetBufReleaser(r BufReleaser) {
+	c.bufReleaser = r
+}
+
+func (c *Conn) releaseBuf(buf []byte) {
+	if c.bufReleaser != nil {
+		c.bufReleaser.Release(buf)
+	}
 }
 
 func (c *Conn) SetClosed() bool {
@@ -132,7 +149,7 @@ func (c *Conn) writeLoop() {
 				select {
 				case buf := <-c.writeQ:
 					if len(buf) > 0 {
-						protocol.PutBuf(buf)
+						c.releaseBuf(buf)
 					}
 				default:
 					return
@@ -141,11 +158,11 @@ func (c *Conn) writeLoop() {
 		}
 
 		if len(buf) == 0 {
-			protocol.PutBuf(buf)
+			c.releaseBuf(buf)
 			continue
 		}
 		if c.IsClosed() {
-			protocol.PutBuf(buf)
+			c.releaseBuf(buf)
 			continue
 		}
 
@@ -160,11 +177,11 @@ func (c *Conn) writeLoop() {
 					goto flush
 				}
 				if len(next) == 0 {
-					protocol.PutBuf(next)
+					c.releaseBuf(next)
 					continue
 				}
 				if c.IsClosed() {
-					protocol.PutBuf(next)
+					c.releaseBuf(next)
 					continue
 				}
 				batch = append(batch, next)
@@ -180,30 +197,26 @@ func (c *Conn) writeLoop() {
 
 		if len(batch) == 1 {
 			_, err := c.wc.Write(batch[0])
-			protocol.PutBuf(batch[0])
+			c.releaseBuf(batch[0])
 			if err != nil {
-				logx.Err.Println(err)
 				return
 			}
 			metric.CounterOf("transport_packets_sent_total").Inc()
 			metric.CounterOf("transport_bytes_sent_total").Add(uint64(len(batch[0])))
 		} else {
-			merged := protocol.GetBuf(totalLen)
+			merged := make([]byte, totalLen)
 			off := 0
 			for _, b := range batch {
 				copy(merged[off:], b)
 				off += len(b)
-				protocol.PutBuf(b)
+				c.releaseBuf(b)
 			}
 			_, err := c.wc.Write(merged[:off])
 			if err != nil {
-				protocol.PutBuf(merged)
-				logx.Err.Println(err)
 				return
 			}
 			metric.CounterOf("transport_packets_sent_total").Add(uint64(len(batch)))
 			metric.CounterOf("transport_bytes_sent_total").Add(uint64(off))
-			protocol.PutBuf(merged)
 		}
 		c.RefreshHeartbeat()
 	}

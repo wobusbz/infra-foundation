@@ -1,45 +1,76 @@
 package cluster
 
 import (
-	"infra-foundation/model"
+	"infra-foundation/message"
 	"infra-foundation/protocol"
 	"infra-foundation/session"
 	"sync/atomic"
 )
 
+var _ session.Session = (*ProxySession)(nil)
+var _ ServerBinding = (*ProxySession)(nil)
+
 type ProxySession struct {
-	*session.SessionBase
-	Codec        *protocol.Codec
-	modelManager *model.ModelManager
-	connMgr      *session.Manager
-	peerMgr      *session.Manager
-	router       *Node
-	msgh         *MessageHandler
-	closed       atomic.Bool
+	*ClusterSessionBase
+	Codec      *protocol.ClusterCodec
+	forwarder  PacketForwarder
+	pusher     PushBroker
+	dispatcher ModelDispatcher
+	connMgr    ClientStore
+	closed     atomic.Bool
 }
 
-func NewProxySession(s *session.SessionEntity, router *Node, modelManager *model.ModelManager, connMgr, peerMgr *session.Manager, msgh *MessageHandler) *ProxySession {
+func NewProxySession(
+	s *session.SessionCore,
+	forwarder PacketForwarder,
+	pusher PushBroker,
+	dispatcher ModelDispatcher,
+	connMgr ClientStore,
+) *ProxySession {
 	p := &ProxySession{
-		Codec:        protocol.NewCodec(),
-		modelManager: modelManager,
-		connMgr:      connMgr,
-		peerMgr:      peerMgr,
-		router:       router,
-		msgh:         msgh,
+		Codec:      protocol.NewClusterCodec(),
+		forwarder:  forwarder,
+		pusher:     pusher,
+		dispatcher: dispatcher,
+		connMgr:    connMgr,
 	}
-	p.SessionBase = &session.SessionBase{
-		SessionEntity: s,
-		Messenger:     &proxyMessenger{p: p},
+	p.ClusterSessionBase = NewClusterSessionBase(s.ID())
+	if uid := s.UID(); uid != "" {
+		p.ClusterSessionBase.BindUid(uid)
 	}
+	p.connMgr.Store(p)
 	return p
 }
 
 func (p *ProxySession) BindUid(uid string) error {
-	p.SessionEntity.BindUid(uid)
+	p.ClusterSessionBase.BindUid(uid)
+	return nil
+}
+
+func (p *ProxySession) Send(pb message.Message) error {
+	return p.forwarder.SendPb(p, p.Codec, string(p.ID()), pb)
+}
+
+func (p *ProxySession) Notify(targets []session.Session, pb message.Message) error {
+	return p.pusher.SendPush(targets, pb)
+}
+
+func (p *ProxySession) Close() error {
+	if !p.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	prevState := p.State()
+	if p.TransitionToClosing() {
+		if prevState == session.SessionUIDBound {
+			p.dispatcher.OnDisconnection(p)
+		}
+		p.MarkClosed()
+	}
+	p.connMgr.RemoveByID(p.ID())
 	return nil
 }
 
 func (p *ProxySession) SendData(data []byte) error {
-	pack := protocol.NewWithSID(protocol.ClusterResponse, 0, string(p.ID()), data)
-	return p.router.forwardPkt(p, p.Codec, pack, "")
+	pack := protocol.NewWithSID(protocol.ClusterResponse, 0, 0, string(p.ID()), data)
+	return p.forwarder.ForwardPkt(p, p.Codec, pack, "")
 }

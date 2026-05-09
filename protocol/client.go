@@ -2,51 +2,54 @@ package protocol
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
-
-	"github.com/cloudwego/netpoll"
-)
-
-var (
-	ErrClientPktTooShort = errors.New("client: packet too short")
-	ErrClientPktInvalid  = errors.New("client: invalid packet length")
 )
 
 type ClientProtocol interface {
-	NextPacket(reader netpoll.Reader) (msgID int32, payload []byte, err error)
+	NextPacket(reader Reader) (msgID int32, payload []byte, err error)
 	Pack(msgID int32, payload []byte) []byte
 	PackPooled(msgID int32, payload []byte) []byte
 	UnpackAll(data []byte) (msgIDs []int32, payloads [][]byte, err error)
 }
 
-type ClientCodec struct{}
-
-func NewClientCodec() *ClientCodec {
-	return &ClientCodec{}
+type ClientCodec struct {
+	frame FrameCodec
 }
 
-func (c *ClientCodec) NextPacket(reader netpoll.Reader) (msgID int32, payload []byte, err error) {
-	if reader.Len() < 4 {
+func NewClientCodec() *ClientCodec {
+	return &ClientCodec{
+		frame: NewFrameCodec(8, MaxPktLen),
+	}
+}
+
+func (c *ClientCodec) NextPacket(reader Reader) (msgID int32, payload []byte, err error) {
+	frame, err := c.frame.Next(reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	if frame == nil {
 		return 0, nil, nil
 	}
-	bLen, err := reader.Peek(4)
+	defer frame.Release()
+
+	if frame.Len() < 8 {
+		return 0, nil, ErrFrameInvalidLength
+	}
+
+	head, err := frame.Next(8)
 	if err != nil {
-		return 0, nil, fmt.Errorf("peek length: %w", err)
+		return 0, nil, err
 	}
-	length := int(binary.BigEndian.Uint32(bLen))
-	if length < 8 {
-		return 0, nil, fmt.Errorf("invalid packet length %d", length)
-	}
-	if reader.Len() < length {
-		return 0, nil, nil
-	}
-	buf, err := reader.Next(length)
+
+	msgID = int32(binary.BigEndian.Uint32(head[4:8]))
+
+	raw, err := frame.ReadBinary(frame.Len())
 	if err != nil {
-		return 0, nil, fmt.Errorf("next packet: %w", err)
+		return 0, nil, err
 	}
-	msgID = int32(binary.BigEndian.Uint32(buf[4:8]))
-	payload = buf[8:]
+
+	payload = make([]byte, len(raw))
+	copy(payload, raw)
 	return msgID, payload, nil
 }
 
@@ -61,11 +64,11 @@ func (c *ClientCodec) Pack(msgID int32, payload []byte) []byte {
 
 func (c *ClientCodec) Unpack(data []byte) (msgID int32, payload []byte, err error) {
 	if len(data) < 8 {
-		return 0, nil, ErrClientPktTooShort
+		return 0, nil, ErrFrameInvalidLength
 	}
 	total := int(binary.BigEndian.Uint32(data[0:4]))
 	if total < 8 || total > len(data) {
-		return 0, nil, ErrClientPktInvalid
+		return 0, nil, ErrFrameInvalidLength
 	}
 	msgID = int32(binary.BigEndian.Uint32(data[4:8]))
 	payload = data[8:total]
@@ -80,7 +83,7 @@ func (c *ClientCodec) UnpackAll(data []byte) (msgIDs []int32, payloads [][]byte,
 		}
 		total := int(binary.BigEndian.Uint32(data[off : off+4]))
 		if total < 8 {
-			return nil, nil, ErrClientPktInvalid
+			return nil, nil, ErrFrameInvalidLength
 		}
 		if off+total > len(data) {
 			break
@@ -96,11 +99,11 @@ func (c *ClientCodec) UnpackAll(data []byte) (msgIDs []int32, payloads [][]byte,
 
 func (c *ClientCodec) PeekLength(data []byte) (int, error) {
 	if len(data) < 4 {
-		return 0, ErrClientPktTooShort
+		return 0, ErrFrameInvalidLength
 	}
 	total := int(binary.BigEndian.Uint32(data[0:4]))
 	if total < 8 {
-		return 0, ErrClientPktInvalid
+		return 0, ErrFrameInvalidLength
 	}
 	return total, nil
 }
@@ -116,9 +119,6 @@ func (c *ClientCodec) PackTo(msgID int32, payload []byte, buf []byte) ([]byte, e
 	return buf[:total], nil
 }
 
-// PackPooled packs using a pooled buffer to avoid heap allocation.
-// The caller must ensure the returned slice is passed to a path that
-// eventually calls protocol.PutBuf so the buffer can be recycled.
 func (c *ClientCodec) PackPooled(msgID int32, payload []byte) []byte {
 	total := 8 + len(payload)
 	buf := GetBuf(total)

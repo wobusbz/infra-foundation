@@ -19,7 +19,6 @@ import (
 func init() {
 	model.RegisterTypedHandler(&protos.C2SLogin{}, func(ctx *session.Context, pb *protos.C2SLogin) {
 		ctx.Session.BindUid(strconv.FormatInt(time.Now().Unix(), 10))
-		logx.Dbg.Println("C2SLogin: ", ctx.Session.ID())
 		ctx.Session.Send(&protos.S2CLogin{Name: "Helloworld client" + string(ctx.Session.ID())})
 	})
 }
@@ -30,10 +29,10 @@ func (u *User) Name() string   { return "user" }
 func (u *User) OnInit() error  { return nil }
 func (u *User) OnStart() error { return nil }
 func (u *User) OnStop() error  { return nil }
-func (u *User) OnSessionDisconnected(s session.Session) {
+func (u *User) OnSessionDisconnected(s session.Identity) {
 	logx.Dbg.Println("[User/OnDisconnection] ", s.ID())
 }
-func (u *User) OnSessionInitialization(s session.Session) {
+func (u *User) OnSessionInitialization(s session.Identity) {
 	logx.Dbg.Println("[User/OnSessionInitialization] ", s.ID())
 }
 
@@ -44,8 +43,11 @@ func main() {
 	}()
 	model.Register(&User{})
 	s := cluster.NewServer()
+	node := s.ClusterNode()
 	localAddr := "127.0.0.1"
-	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "localhost:2379", s.ClusterNode())
+	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "localhost:2379", s.PeerConnector(), func(name, id, addr string, frontend bool, rids []int32) {
+		node.SetLocalNode(name, id, addr, frontend, rids)
+	})
 	if err != nil {
 		panic(err)
 	}

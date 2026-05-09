@@ -12,8 +12,8 @@ type Model interface {
 	OnInit() error
 	OnStart() error
 	OnStop() error
-	OnSessionDisconnected(session.Session)
-	OnSessionInitialization(session.Session)
+	OnSessionDisconnected(session.Identity)
+	OnSessionInitialization(session.Identity)
 }
 
 type modelActor struct {
@@ -41,11 +41,11 @@ func (m *modelActor) Forward(md *modelActor, cb func()) {
 	md.mailbox.PushTask(cb)
 }
 
-func (m *modelActor) OnSessionInitialization(s session.Session) {
+func (m *modelActor) OnSessionInitialization(s session.Identity) {
 	m.mailbox.PushTask(func() { m.Model.OnSessionInitialization(s) })
 }
 
-func (m *modelActor) OnSessionDisconnected(s session.Session) {
+func (m *modelActor) OnSessionDisconnected(s session.Identity) {
 	m.mailbox.PushTask(func() { m.Model.OnSessionDisconnected(s) })
 }
 

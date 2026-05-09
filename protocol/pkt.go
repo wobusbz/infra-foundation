@@ -22,27 +22,30 @@ const (
 var pktPool = sync.Pool{New: func() any { return &Pkt{} }}
 
 type Pkt struct {
-	typ  ClusterType
-	id   int32
-	sid  string
-	len  int32
-	data []byte
+	typ       ClusterType
+	id        int32
+	requestID uint64
+	sid       string
+	len       int32
+	data      []byte
 }
 
-func New(t ClusterType, id int32, data []byte) *Pkt {
+func New(t ClusterType, id int32, requestID uint64, data []byte) *Pkt {
 	p := pktPool.Get().(*Pkt)
 	p.typ = t
 	p.id = id
+	p.requestID = requestID
 	p.sid = ""
 	p.len = int32(len(data))
 	p.data = data
 	return p
 }
 
-func NewWithSID(t ClusterType, id int32, sid string, data []byte) *Pkt {
+func NewWithSID(t ClusterType, id int32, requestID uint64, sid string, data []byte) *Pkt {
 	p := pktPool.Get().(*Pkt)
 	p.typ = t
 	p.id = id
+	p.requestID = requestID
 	p.sid = sid
 	p.len = int32(len(data))
 	p.data = data
@@ -53,19 +56,20 @@ func (p *Pkt) Free() {
 	p.typ = 0
 	p.len = 0
 	p.id = 0
+	p.requestID = 0
 	p.sid = ""
 	p.data = nil
 	pktPool.Put(p)
 }
 
-func (p *Pkt) ID() int32 { return p.id }
-
-func (p *Pkt) SID() string { return p.sid }
-
+func (p *Pkt) ID() int32                { return p.id }
+func (p *Pkt) MessageID() int32         { return p.id }
+func (p *Pkt) RequestID() uint64        { return p.requestID }
+func (p *Pkt) SID() string              { return p.sid }
 func (p *Pkt) ClusterType() ClusterType { return p.typ }
-
-func (p *Pkt) Data() []byte { return p.data }
+func (p *Pkt) Data() []byte             { return p.data }
+func (p *Pkt) Payload() []byte          { return p.data }
 
 func (p *Pkt) String() string {
-	return fmt.Sprintf("type:%d id:%d len:%d sid:%s datalen:%d", p.typ, p.id, p.len, p.sid, len(p.data))
+	return fmt.Sprintf("type:%d id:%d reqID:%d len:%d sid:%s datalen:%d", p.typ, p.id, p.requestID, p.len, p.sid, len(p.data))
 }

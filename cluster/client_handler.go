@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"infra-foundation/logx"
-	"infra-foundation/model"
 	"infra-foundation/protocol"
 	"infra-foundation/queue"
 	"infra-foundation/session"
@@ -18,21 +17,21 @@ type clientContextKey struct{}
 var clientCtxKey clientContextKey
 
 type ClientHandler struct {
-	connMgr        *session.Manager
-	modelManager   *model.ModelManager
+	dispatcher     ModelDispatcher
 	taskQueue      *queue.TaskQueue
 	node           *Node
-	codec          *protocol.Codec
+	lifecycle      *FrontendLifecycle
+	codec          *protocol.ClusterCodec
 	clientProtocol protocol.ClientProtocol
 }
 
-func NewClientHandler(connMgr *session.Manager, modelManager *model.ModelManager, taskQueue *queue.TaskQueue, node *Node) *ClientHandler {
+func NewClientHandler(dispatcher ModelDispatcher, taskQueue *queue.TaskQueue, node *Node, lifecycle *FrontendLifecycle) *ClientHandler {
 	return &ClientHandler{
-		connMgr:        connMgr,
-		modelManager:   modelManager,
+		dispatcher:     dispatcher,
 		taskQueue:      taskQueue,
 		node:           node,
-		codec:          protocol.NewCodec(),
+		lifecycle:      lifecycle,
+		codec:          protocol.NewClusterCodec(),
 		clientProtocol: protocol.NewClientCodec(),
 	}
 }
@@ -43,8 +42,9 @@ func (h *ClientHandler) OnPrepare(connection netpoll.Connection) context.Context
 	localAddr := connection.LocalAddr()
 	logx.Inf.Printf("[ClientHandler/OnPrepare] new client connection from %s to %s, sid=%s", remoteAddr, localAddr, sid)
 
-	conn := transport.NewConn(connection, sid)
-	clientConn := NewClientConn(conn, h.clientProtocol, h.codec, h.node, h.connMgr, h.modelManager)
+	conn := transport.NewConn(connection, string(sid))
+	conn.SetBufReleaser(protocolBufReleaser{})
+	clientConn := NewClientConn(conn, h.clientProtocol, h.codec, h.node, h.lifecycle)
 	return context.WithValue(context.Background(), clientCtxKey, clientConn)
 }
 
@@ -67,7 +67,7 @@ func (h *ClientHandler) OnRequest(ctx context.Context, connection netpoll.Connec
 		return fmt.Errorf("get conn from context failed")
 	}
 
-	msgID, payload, err := h.clientProtocol.NextPacket(connection.Reader())
+	msgID, payload, err := h.clientProtocol.NextPacket(adaptNetpollReader(connection.Reader()))
 	if err != nil {
 		logx.Err.Printf("[ClientHandler/OnRequest] protocol error from %s: %v", conn.ID(), err)
 		conn.Close()
@@ -77,10 +77,8 @@ func (h *ClientHandler) OnRequest(ctx context.Context, connection netpoll.Connec
 		return nil
 	}
 
-	data := make([]byte, len(payload))
-	copy(data, payload)
 	if err = h.taskQueue.Put(string(conn.ID()), func() {
-		if err := h.handleClientMessage(conn, msgID, data); err != nil {
+		if err := h.handleClientMessage(conn, msgID, payload); err != nil {
 			logx.Err.Println(err)
 		}
 	}); err != nil {
@@ -92,9 +90,20 @@ func (h *ClientHandler) OnRequest(ctx context.Context, connection netpoll.Connec
 }
 
 func (h *ClientHandler) handleClientMessage(conn *ClientConn, msgID int32, data []byte) error {
-	if h.modelManager.IsLocalHandler(msgID) {
-		return h.modelManager.Dispatch(conn, msgID, data)
+	decision := h.node.router.Decide(msgID, conn, DirClientInbound)
+	switch decision.Kind {
+	case RouteLocalModel:
+		return h.dispatcher.Dispatch(conn, msgID, data)
+	case RouteBackendNode:
+		pack := protocol.NewWithSID(protocol.ClusterRequest, msgID, 0, string(conn.ID()), data)
+		return h.node.ForwardPkt(conn, conn.codec, pack, decision.Service)
+	case RouteGatewayNode:
+		pack := protocol.NewWithSID(protocol.ClusterRequest, msgID, 0, string(conn.ID()), data)
+		return h.node.ForwardPkt(conn, conn.codec, pack, "")
+	case RouteFrontendClient:
+		return fmt.Errorf("unexpected frontend route for inbound message %d", msgID)
+	case RouteDrop:
+		return fmt.Errorf("no route for message %d", msgID)
 	}
-	pack := protocol.NewWithSID(protocol.ClusterRequest, msgID, string(conn.ID()), data)
-	return h.node.forwardPkt(conn, conn.codec, pack, h.node.serviceByRoute(msgID))
+	return nil
 }

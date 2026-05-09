@@ -36,10 +36,10 @@ func (r *User) OnStart() error { return nil }
 
 func (r *User) OnStop() error { return nil }
 
-func (r *User) OnSessionDisconnected(s session.Session) {
+func (r *User) OnSessionDisconnected(s session.Identity) {
 	logx.Dbg.Println("[User/OnDisconnection] ", s.ID())
 }
-func (r *User) OnSessionInitialization(s session.Session) {
+func (r *User) OnSessionInitialization(s session.Identity) {
 	logx.Dbg.Println("[User/OnSessionInitialization] ", s.ID())
 }
 
@@ -56,10 +56,13 @@ func main() {
 	model.Register(&User{})
 
 	s := cluster.NewServer()
+	node := s.ClusterNode()
 
 	localAddr := "127.0.0.1"
 
-	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "localhost:2379", s.ClusterNode())
+	discovery, err := cluster.NewEtcdServiceDiscovery("XBOX", "localhost:2379", s.PeerConnector(), func(name, id, addr string, frontend bool, rids []int32) {
+		node.SetLocalNode(name, id, addr, frontend, rids)
+	})
 	if err != nil {
 		panic(err)
 	}
